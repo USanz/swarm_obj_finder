@@ -1,0 +1,92 @@
+flow: swarm_obj_finder
+
+vars:
+  BASE_DIR_PATH: file:///home/usanz/zs_t3/t3_ws/src/swarm_obj_finder
+
+
+
+sources:
+  - id : map_provider_source
+    descriptor : "{{ BASE_DIR_PATH }}/config/nodes_cfg/map_provider_source.yaml"
+
+operators:
+  - id : map_divider_op
+    descriptor : "{{ BASE_DIR_PATH }}/config/nodes_cfg/map_divider_op.yaml"
+
+  - id : paths_planner_op
+    descriptor : "{{ BASE_DIR_PATH }}/config/nodes_cfg/paths_planner_op.yaml"
+
+  - id : navigator_op
+    descriptor : "{{ BASE_DIR_PATH }}/config/nodes_cfg/navigator_op.yaml"
+
+sinks:
+  - id : markers_sink
+    configuration:
+      Markers: rt/debug/divisions/markers
+    descriptor : "builtin://zenoh"
+
+  - id : debug_image
+    configuration:
+      DebugImage: rt/debug/divisions/map
+    descriptor : "builtin://zenoh"
+    
+  - id : goal_pose_sink
+    configuration:
+      Waypoint: rt/robot2/goal_pose
+    descriptor : "builtin://zenoh"
+
+
+
+links:
+- from:
+    node : map_provider_source
+    output : Map
+  to:
+    node : map_divider_op
+    input : Map
+
+- from:
+    node : map_divider_op
+    output : Markers
+  to:
+    node : markers_sink
+    input : Markers
+- from:
+    node : map_divider_op
+    output : DebugImage
+  to:
+    node : debug_image
+    input : DebugImage
+- from:
+    node : map_divider_op
+    output : Divisions
+  to:
+    node : paths_planner_op
+    input : Divisions
+
+- from:
+    node : map_provider_source
+    output : Map
+  to:
+    node : paths_planner_op
+    input : Map
+
+- from:
+    node : paths_planner_op
+    output : Paths
+  to:
+    node : navigator_op
+    input : Paths
+
+- from:
+    node : navigator_op
+    output : Waypoint
+  to:
+    node : goal_pose_sink
+    input : Waypoint
+
+mapping:
+  map_provider_source: computer
+  map_divider_op: computer
+  paths_planner_op: computer
+  navigator_op: computer
