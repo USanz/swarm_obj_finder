@@ -128,11 +128,11 @@ class Navigator(Operator):
                 self.paths[index] = path
 
                 first_wp = self.paths[index].pop(0)
-                goal_pose_msg = self.stamp_pose(first_wp) #Pose to PoseStamped
-                goal_pose_ser = self.ser_goal_pose_msg(goal_pose_msg)
+                self.current_goals[index] = self.stamp_pose(first_wp) #Pose to PoseStamped
+                goal_pose_ser = self.ser_goal_pose_msg(self.current_goals[index])
                 self.wp_outputs[index].send(goal_pose_ser)
                 print("NAVIGATOR_OP -> sending first goal pose",
-                      goal_pose_msg.pose.position, "to", ns)
+                      self.current_goals[index].pose.position, "to", ns)
                 
             if "NavStatus" in who: #who contains "NavStatus"
                 index = int(who[-1]) -1 #who should be NavStatus1, NavStatus2, ....
