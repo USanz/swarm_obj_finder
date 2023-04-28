@@ -4,8 +4,9 @@ uri: file:///home/usanz/zs_t3/t3_ws/src/swarm_obj_finder/zenoh-flow_nodes/paths_
 
 configuration:
   common_cfg_file: "/home/usanz/zs_t3/t3_ws/src/swarm_obj_finder/config/common_cfg.yaml"
-  waypoint_separation: 30
+  map_yaml_file: "/home/usanz/zs_t3/t3_ws/src/swarm_obj_finder/maps/turtlebot3_world/turtlebot3_world.yaml"
+  waypoint_separation: 0.5 # in meters
 
 inputs: [Map, Divisions]
-outputs: [Paths]
+outputs: [Paths, Markers]
 tags: []

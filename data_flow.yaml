@@ -9,6 +9,14 @@ sources:
   - id : map_provider_source
     descriptor : "{{ BASE_DIR_PATH }}/config/nodes_cfg/map_provider_source.yaml"
 
+  - id : nav2_feedback_source
+    configuration:
+      NavStatus1: rt/robot1/navigate_to_pose/_action/status
+      NavStatus2: rt/robot2/navigate_to_pose/_action/status
+      #NavFeeback1: rt/robot1/navigate_to_pose/_action/feedback
+      #NavFeeback2: rt/robot2/navigate_to_pose/_action/feedback
+    descriptor : "builtin://zenoh"
+
 operators:
   - id : map_divider_op
     descriptor : "{{ BASE_DIR_PATH }}/config/nodes_cfg/map_divider_op.yaml"
@@ -22,17 +30,18 @@ operators:
 sinks:
   - id : markers_sink
     configuration:
-      Markers: rt/debug/divisions/markers
+      Markers: rt/debug/markers # no namespaces (global topic /debug/markers in ROS2)
     descriptor : "builtin://zenoh"
 
   - id : debug_image
     configuration:
-      DebugImage: rt/debug/divisions/map
+      DebugImage: rt/debug/map_div_img # no namespaces (global topic /debug/map_div_img in ROS2)
     descriptor : "builtin://zenoh"
     
   - id : goal_pose_sink
     configuration:
-      Waypoint: rt/robot2/goal_pose
+      Waypoint1: rt/robot1/goal_pose
+      Waypoint2: rt/robot2/goal_pose
     descriptor : "builtin://zenoh"
 
 
@@ -45,12 +54,6 @@ links:
     node : map_divider_op
     input : Map
 
-- from:
-    node : map_divider_op
-    output : Markers
-  to:
-    node : markers_sink
-    input : Markers
 - from:
     node : map_divider_op
     output : DebugImage
@@ -77,13 +80,38 @@ links:
   to:
     node : navigator_op
     input : Paths
+- from:
+    node : nav2_feedback_source
+    output : NavStatus1
+  to:
+    node : navigator_op
+    input : NavStatus1
+- from:
+    node : nav2_feedback_source
+    output : NavStatus2
+  to:
+    node : navigator_op
+    input : NavStatus2
+
+- from:
+    node : paths_planner_op
+    output : Markers
+  to:
+    node : markers_sink
+    input : Markers
 
 - from:
     node : navigator_op
-    output : Waypoint
+    output : Waypoint1
   to:
     node : goal_pose_sink
-    input : Waypoint
+    input : Waypoint1
+- from:
+    node : navigator_op
+    output : Waypoint2
+  to:
+    node : goal_pose_sink
+    input : Waypoint2
 
 mapping:
   map_provider_source: computer

@@ -6,12 +6,14 @@ from typing import Dict, Any
 import yaml
 from math import floor
 import cv2, numpy as np
+from cv_bridge import CvBridge
 
 from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
 from rclpy.type_support import check_for_type_support
 
 from nav_msgs.msg import OccupancyGrid
 from geometry_msgs.msg import Point32
+from sensor_msgs.msg import Image
 
 
 
@@ -26,7 +28,6 @@ class MapDivider(Operator):
         configuration = {} if configuration is None else configuration
 
         self.input_map = inputs.get("Map", None)
-        self.output_markers = outputs.get("Markers", None)
         self.output_divisions = outputs.get("Divisions", None)
         self.output_debug_img = outputs.get("DebugImage", None)
 
@@ -46,6 +47,12 @@ class MapDivider(Operator):
         if len(self.robot_namespaces) != self.map_parts:
             raise Exception("ERROR: wrong number of namespaces given.")
 
+
+        self.cv_bridge = CvBridge()
+        self.debug_div_img_msg_ser = bytes()
+        self.debug_img_sent = False
+
+        check_for_type_support(Image)
         check_for_type_support(OccupancyGrid)
         check_for_type_support(Point32)
 
@@ -101,21 +108,6 @@ class MapDivider(Operator):
         width, height = self.map_reduced_shape
         x_shift = width / division_shape[0]
         y_shift = height / division_shape[1]
-
-        debug_img = np.array(self.map_msg.data)
-        debug_img.resize((self.map_msg.info.width, self.map_msg.info.height))
-
-        for i in range(division_shape[0]+1):
-            cv2.line(debug_img,
-                     [round(self.map_bbox[0].x + (x_shift*i)), round(self.map_bbox[0].y)],
-                     [round(self.map_bbox[0].x + (x_shift*i)), round(self.map_bbox[0].y + height)],
-                     0, 1)
-        for j in range(division_shape[1]+1):
-            cv2.line(debug_img,
-                     [round(self.map_bbox[0].x), round(self.map_bbox[0].y + y_shift*j)],
-                     [round(self.map_bbox[0].x + width), round(self.map_bbox[0].y + y_shift*j)],
-                     0, 1)
-
         bboxes = [] #Map divided into N bboxes:
         for i in range(division_shape[0]):
             for j in range(division_shape[1]):
@@ -123,29 +115,39 @@ class MapDivider(Operator):
                                 round(self.map_bbox[0].y + y_shift * j)),
                                (round(self.map_bbox[0].x + x_shift * (i+1)),
                                 round(self.map_bbox[0].y + y_shift * (j+1)))])
-        #TO DEBUG:
-        #print(bboxes)
-        #for bbox in bboxes:
-        #    for point in bbox:
-        #        cv2.circle(debug_img,point, 2, 0, 2, -1)
-
-        #for i in range(division_shape[0]+1):
-        #    for j in range(division_shape[1]+1):
-        #        cv2.circle(debug_img,
-        #                   (round(self.map_bbox[0].x + (x_shift*i)), round(self.map_bbox[0].y + y_shift*j)),
-        #                   2, 0, 2, -1)
         
-        #cv2.imwrite("/tmp/map_test_divided.png", debug_img) #For debug
-        #TODO: publish the debug image in a topic to see it from rviz2.
-        #TODO: publish the debug markers in a topic to see them from rviz2.
-
+        ### TO DEBUG:
+        debug_div_img = np.array(self.map_msg.data)
+        debug_div_img.resize((self.map_msg.info.width, self.map_msg.info.height))
+        for i in range(division_shape[0]+1):
+            cv2.line(debug_div_img,
+                     [round(self.map_bbox[0].x + (x_shift*i)), round(self.map_bbox[0].y)],
+                     [round(self.map_bbox[0].x + (x_shift*i)), round(self.map_bbox[0].y + height)],
+                     0, 1)
+        for j in range(division_shape[1]+1):
+            cv2.line(debug_div_img,
+                     [round(self.map_bbox[0].x), round(self.map_bbox[0].y + y_shift*j)],
+                     [round(self.map_bbox[0].x + width), round(self.map_bbox[0].y + y_shift*j)],
+                     0, 1)
+        for bbox in bboxes:
+            for point in bbox:
+                cv2.circle(debug_div_img, point, 2, 0, 2, -1)
+        for i in range(division_shape[0]+1):
+            for j in range(division_shape[1]+1):
+                cv2.circle(debug_div_img,
+                           (round(self.map_bbox[0].x + (x_shift*i)), round(self.map_bbox[0].y + y_shift*j)),
+                           2, 0, 2, -1)
+        debug_img_msg = self.cv_bridge.cv2_to_imgmsg(debug_div_img)
+        self.debug_div_img_msg_ser = _rclpy.rclpy_serialize(debug_img_msg, type(debug_img_msg))
+        ###
+        
         return bboxes
 
     def create_div_msg(self, bbox: list, namespace: str) -> bytes:
         #Namespace is used as an ID, and is put at the beginning:
         ns_bytes = bytes(namespace, "utf-8")
         #Fixed ns lenght of self.ns_bytes_lenght:
-        div_msg = bytes(self.ns_bytes_lenght - len(ns_bytes)) + ns_bytes #Fill with null bytes.
+        div_msg = bytes(' ', "utf-8") * (self.ns_bytes_lenght - len(ns_bytes)) + ns_bytes #Fill with space characters.
         for point in bbox:
             p = Point32()
             p.x, p.y = (float(point[0]), float(point[1]))
@@ -168,6 +170,10 @@ class MapDivider(Operator):
             div_msg = self.create_div_msg(bbox, ns)
             await self.output_divisions.send(div_msg)
             print(f"MAP_DIVIDER_OP -> Sending division limits to:\t{ns}\t{bbox}")
+
+        if not self.debug_img_sent:
+            self.output_debug_img.send(self.debug_div_img_msg_ser)
+            self.debug_img_sent = True
 
         return None
 

@@ -6,5 +6,5 @@ configuration:
   common_cfg_file: "/home/usanz/zs_t3/t3_ws/src/swarm_obj_finder/config/common_cfg.yaml"
 
 inputs: [Map]
-outputs: [Markers, Divisions, DebugImage]
+outputs: [Divisions, DebugImage]
 tags: []

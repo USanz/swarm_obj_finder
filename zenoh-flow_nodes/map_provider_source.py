@@ -25,8 +25,6 @@ class MapProvider(Source):
         
         configuration = {} if configuration is None else configuration
         self.map_yaml_file = str(configuration.get("map_yaml_file", "maps/turtlebot3_world/turtlebot3_world.yaml"))
-        self.map_reduction_margin = int(configuration.get("map_reduction_margin", 0))
-        #self.reduce_map = bool(configuration.get("reduce_map", False))
 
         check_for_type_support(OccupancyGrid)
         check_for_type_support(Point32)
@@ -70,17 +68,6 @@ class MapProvider(Source):
 
         map_img = cv2.imread(map_data_dict.get("image"), cv2.IMREAD_GRAYSCALE)
         
-        #if self.reduce_map:
-        #    origin_pix_shift, map_img = self.reduce_empty_space(map_img,
-        #                                                  bool(map_data_dict.get("negate")),
-        #                                                  map_data_dict.get("free_thresh"),
-        #                                                  map_data_dict.get("occupied_thresh"),
-        #                                                  self.map_reduction_margin)
-        #    map_msg.info.origin.position.x += origin_pix_shift[0] * map_msg.info.resolution
-        #    map_msg.info.origin.position.y += origin_pix_shift[1] * map_msg.info.resolution
-        
-        #cv2.imwrite("/tmp/map_test_reduced.png", map_img) #For debug
-
         bbox_points = self.get_bbox(map_img,
                         bool(map_data_dict.get("negate")),
                         map_data_dict.get("free_thresh"),
