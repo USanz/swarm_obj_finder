@@ -130,7 +130,7 @@ class Navigator(Operator):
                 first_wp = self.paths[index].pop(0)
                 self.current_goals[index] = self.stamp_pose(first_wp) #Pose to PoseStamped
                 goal_pose_ser = self.ser_goal_pose_msg(self.current_goals[index])
-                self.wp_outputs[index].send(goal_pose_ser)
+                await self.wp_outputs[index].send(goal_pose_ser)
                 print("NAVIGATOR_OP -> sending first goal pose",
                       self.current_goals[index].pose.position, "to", ns)
                 
@@ -148,7 +148,7 @@ class Navigator(Operator):
                         next_wp = self.paths[index].pop(0)
                         self.current_goals[index] = self.stamp_pose(next_wp)
                         goal_pose_ser = self.ser_goal_pose_msg(self.current_goals[index])
-                        self.wp_outputs[index].send(goal_pose_ser)
+                        await self.wp_outputs[index].send(goal_pose_ser)
                         print("NAVIGATOR_OP ->", who,
                               "sending next wp:", self.current_goals[index])
                     else:
@@ -157,7 +157,7 @@ class Navigator(Operator):
                     print("NAVIGATOR_OP ->", who,
                           "resending wp:", self.current_goals[index])
                     goal_pose_ser = self.ser_goal_pose_msg(self.current_goals[index])
-                    self.wp_outputs[index].send(goal_pose_ser)
+                    await self.wp_outputs[index].send(goal_pose_ser)
 
     def finalize(self) -> None:
         return None
