@@ -4,18 +4,17 @@ from zenoh_flow.types import Context
 from typing import Dict, Any
 
 import yaml, asyncio
+from math import sqrt
 
 from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
 from rclpy.type_support import check_for_type_support
 
-#from nav2_msgs.action import NavigateToPose
-#from nav2_msgs.action._navigate_to_pose import NavigateToPose_Feedback as Feedback
-#topic: "/robot1/navigate_to_pose/_action/feedback", this works:
-#from nav2_msgs.action._navigate_to_pose import NavigateToPose_FeedbackMessage as FeedbackMessage
-#topic: "/robot1/navigate_to_pose/_action/status":
-from action_msgs.msg import GoalStatusArray
-from geometry_msgs.msg import Point32, PoseStamped, Pose
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 
+import sys, os, inspect
+currentdir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
+sys.path.insert(0, currentdir)
+from comms_utils import *
 
 
 class Navigator(Operator):
@@ -28,9 +27,11 @@ class Navigator(Operator):
     ):
         configuration = {} if configuration is None else configuration
 
-        self.input_paths = inputs.get("Paths", None)
-        self.input_nav_status1 = inputs.get("NavStatus1", None)
-        self.input_nav_status2 = inputs.get("NavStatus2", None)
+        self.input_next_wp = inputs.get("NextWP", None)
+        self.input_pose1 = inputs.get("Pose1", None)
+        self.input_pose2 = inputs.get("Pose2", None)
+
+        self.output_wp_req = outputs.get("WPRequest", None)
 
         self.output_wps1 = outputs.get("Waypoint1", None)
         self.output_wps2 = outputs.get("Waypoint2", None)
@@ -49,52 +50,40 @@ class Navigator(Operator):
         self.int_bytes_lenght = int(configuration.get("int_bytes_lenght", 4))
 
         self.pending = list()
-        self.paths = [[]] * self.robot_num
-        self.current_goals = [PoseStamped()] * self.robot_num
+        self.current_wp = [PoseStamped()] * self.robot_num
 
-        check_for_type_support(Point32)
         check_for_type_support(PoseStamped)
-        check_for_type_support(Pose)
-        check_for_type_support(GoalStatusArray)
-
-
-    def stamp_pose(self, pose: Pose) -> PoseStamped: #Pose to PoseStamped
-        goal_pose = PoseStamped()
-        goal_pose.header.frame_id = "map"
-        goal_pose.header.stamp.sec = 0
-        goal_pose.header.stamp.nanosec = 0
-        goal_pose.pose = pose
-        return goal_pose
+        check_for_type_support(PoseWithCovarianceStamped)
 
     def ser_goal_pose_msg(self, goal_pose_msg: PoseStamped) -> bytes:
         return _rclpy.rclpy_serialize(goal_pose_msg, PoseStamped)
     
-    async def wait_paths(self):
-        data_msg = await self.input_paths.recv()
-        return ("Paths", data_msg)
+    async def wait_pose1(self):
+        data_msg = await self.input_pose1.recv()
+        return ("Pose1", data_msg)
     
-    async def wait_status1(self):
-        data_msg = await self.input_nav_status1.recv()
-        return ("NavStatus1", data_msg)
+    async def wait_pose2(self):
+        data_msg = await self.input_pose2.recv()
+        return ("Pose2", data_msg)
     
-    async def wait_status2(self):
-        data_msg = await self.input_nav_status2.recv()
-        return ("NavStatus2", data_msg)
+    async def wait_next_wp(self):
+        data_msg = await self.input_next_wp.recv()
+        return ("NextWP", data_msg)
 
     def create_task_list(self):
         task_list = [] + self.pending
 
-        if not any(t.get_name() == "Paths" for t in task_list):
+        if not any(t.get_name() == "Pose1" for t in task_list):
             task_list.append(
-                asyncio.create_task(self.wait_paths(), name="Paths")
+                asyncio.create_task(self.wait_pose1(), name="Pose1")
             )
-        if not any(t.get_name() == "NavStatus1" for t in task_list):
+        if not any(t.get_name() == "Pose2" for t in task_list):
             task_list.append(
-                asyncio.create_task(self.wait_status1(), name="NavStatus1")
+                asyncio.create_task(self.wait_pose2(), name="Pose2")
             )
-        if not any(t.get_name() == "NavStatus2" for t in task_list):
+        if not any(t.get_name() == "NextWP" for t in task_list):
             task_list.append(
-                asyncio.create_task(self.wait_status2(), name="NavStatus2")
+                asyncio.create_task(self.wait_next_wp(), name="NextWP")
             )
         return task_list
 
@@ -106,58 +95,30 @@ class Navigator(Operator):
         self.pending = list(pending)
         for d in done:
             (who, data_msg) = d.result()
-            if who == "Paths":
-                ns_bytes = data_msg.data[:self.ns_bytes_lenght]
-                path_len_bytes = data_msg.data[self.ns_bytes_lenght:self.ns_bytes_lenght + self.int_bytes_lenght]
-                path_bytes = data_msg.data[self.ns_bytes_lenght + self.int_bytes_lenght:]
-                print("NAVIGATOR_OP -> path received")
 
-                #TODO: create robotPath objects for every namespace to store their paths:
-                path_len = int.from_bytes(path_len_bytes, 'little')
-
-                ns_from_bytes = str(ns_bytes.decode('utf-8')).lstrip()
-                #We need to get the original name because in the decoded there
-                #are empty bytes (/x00) that can't be removed otherwise:
-                index = self.robot_namespaces.index(ns_from_bytes)
-                ns = self.robot_namespaces[index]
-
-                path = []
-                bytes_step = len(_rclpy.rclpy_serialize(Pose(), Pose))
-                for starting_byte in range(0, path_len*bytes_step, bytes_step):
-                    path.append(_rclpy.rclpy_deserialize(path_bytes[starting_byte:starting_byte + bytes_step], Pose))
-                self.paths[index] = path
-
-                first_wp = self.paths[index].pop(0)
-                self.current_goals[index] = self.stamp_pose(first_wp) #Pose to PoseStamped
-                goal_pose_ser = self.ser_goal_pose_msg(self.current_goals[index])
-                await self.wp_outputs[index].send(goal_pose_ser)
-                print("NAVIGATOR_OP -> sending first goal pose",
-                      self.current_goals[index].pose.position, "to", ns)
+            if who == "NextWP":
+                ns = deser_string(data_msg.data[:self.ns_bytes_lenght], ' ')
+                index = self.robot_namespaces.index(ns)
                 
-            if "NavStatus" in who: #who contains "NavStatus"
-                index = int(who[-1]) -1 #who should be NavStatus1, NavStatus2, ....
-                status_msg = _rclpy.rclpy_deserialize(data_msg.data, GoalStatusArray)
-                #This also works: most of the times gets a status of 4 when
-                #reached but sometimes it gets a 6 in the middle and doesn't
-                #receive the 4 afterwards when reachnig the goal.
-                
-                status = status_msg.status_list[-1].status
-                print("NAVIGATOR_OP ->", who, "status received:", status)
-                if status == 4: #When goal reached, send the next one:
-                    if len(self.paths[index]) > 0:
-                        next_wp = self.paths[index].pop(0)
-                        self.current_goals[index] = self.stamp_pose(next_wp)
-                        goal_pose_ser = self.ser_goal_pose_msg(self.current_goals[index])
-                        await self.wp_outputs[index].send(goal_pose_ser)
-                        print("NAVIGATOR_OP ->", who,
-                              "sending next wp:", self.current_goals[index])
-                    else:
-                        print("NAVIGATOR_OP ->", who, "path finished!")
-                elif status == 6: #In case of navigation failure, resend the goal:
-                    print("NAVIGATOR_OP ->", who,
-                          "resending wp:", self.current_goals[index])
-                    goal_pose_ser = self.ser_goal_pose_msg(self.current_goals[index])
-                    await self.wp_outputs[index].send(goal_pose_ser)
+                ser_current_wp = data_msg.data[self.ns_bytes_lenght:]
+                self.current_wp[index] = _rclpy.rclpy_deserialize(ser_current_wp, PoseStamped)
+                print(self.current_wp[index])
+                await self.wp_outputs[index].send(ser_current_wp)
+
+            #Get the poses from odom and transform to map
+            if "Pose" in who: #who contains "Pose"
+                index = int(who[-1]) -1 #who should be Pose1, Pose2, ...
+                pose_stamped = _rclpy.rclpy_deserialize(data_msg.data, PoseWithCovarianceStamped)
+                x_dist = pose_stamped.pose.pose.position.x - self.current_wp[index].pose.position.x
+                y_dist = pose_stamped.pose.pose.position.y - self.current_wp[index].pose.position.y
+                #ori_err = quat_diff(pose_stamped.pose.pose.orientation - self.current_wp[index].pose.orientation)
+                dist = sqrt(x_dist**2 + y_dist**2)
+                print("dist", x_dist, y_dist, dist)
+                if dist < 0.35:# and ori_err < radians(5):
+                    print("wp reached, requesting next wp")
+                    ns = self.robot_namespaces[index]
+                    ns_ser = ser_string(ns, self.ns_bytes_lenght, ' ')
+                    await self.output_wp_req.send(ns_ser)
 
     def finalize(self) -> None:
         return None

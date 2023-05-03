@@ -6,21 +6,13 @@ vars:
 
 
 sources:
-  - id : map_provider_source
-    descriptor : "{{ BASE_DIR_PATH }}/config/nodes_cfg/map_provider_source.yaml"
-
-  - id : nav2_feedback_source
+  - id : poses_source
     configuration:
-      NavStatus1: rt/robot1/navigate_to_pose/_action/status
-      NavStatus2: rt/robot2/navigate_to_pose/_action/status
-      #NavFeeback1: rt/robot1/navigate_to_pose/_action/feedback
-      #NavFeeback2: rt/robot2/navigate_to_pose/_action/feedback
+      Pose1: rt/robot1/amcl_pose
+      Pose2: rt/robot2/amcl_pose
     descriptor : "builtin://zenoh"
 
 operators:
-  - id : map_divider_op
-    descriptor : "{{ BASE_DIR_PATH }}/config/nodes_cfg/map_divider_op.yaml"
-
   - id : paths_planner_op
     descriptor : "{{ BASE_DIR_PATH }}/config/nodes_cfg/paths_planner_op.yaml"
 
@@ -48,50 +40,30 @@ sinks:
 
 links:
 - from:
-    node : map_provider_source
-    output : Map
-  to:
-    node : map_divider_op
-    input : Map
-
-- from:
-    node : map_divider_op
-    output : DebugImage
-  to:
-    node : debug_image
-    input : DebugImage
-- from:
-    node : map_divider_op
-    output : Divisions
+    node : navigator_op
+    output : WPRequest
   to:
     node : paths_planner_op
-    input : Divisions
-
-- from:
-    node : map_provider_source
-    output : Map
-  to:
-    node : paths_planner_op
-    input : Map
-
+    input : WPRequest
 - from:
     node : paths_planner_op
-    output : Paths
+    output : NextWP
   to:
     node : navigator_op
-    input : Paths
+    input : NextWP
+
 - from:
-    node : nav2_feedback_source
-    output : NavStatus1
+    node : poses_source
+    output : Pose1
   to:
     node : navigator_op
-    input : NavStatus1
+    input : Pose1
 - from:
-    node : nav2_feedback_source
-    output : NavStatus2
+    node : poses_source
+    output : Pose2
   to:
     node : navigator_op
-    input : NavStatus2
+    input : Pose2
 
 - from:
     node : paths_planner_op
@@ -99,6 +71,12 @@ links:
   to:
     node : markers_sink
     input : Markers
+- from:
+    node : paths_planner_op
+    output : DebugImage
+  to:
+    node : debug_image
+    input : DebugImage
 
 - from:
     node : navigator_op
@@ -114,7 +92,5 @@ links:
     input : Waypoint2
 
 mapping:
-  map_provider_source: computer
-  map_divider_op: computer
   paths_planner_op: computer
   navigator_op: computer

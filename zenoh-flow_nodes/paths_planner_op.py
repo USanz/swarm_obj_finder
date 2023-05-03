@@ -3,24 +3,27 @@ from zenoh_flow import Input, Output
 from zenoh_flow.types import Context
 from typing import Dict, Any
 
-import yaml, asyncio, cv2
+import yaml, cv2, numpy as np
 from math import pi
 
 from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
 from rclpy.type_support import check_for_type_support
 
-from nav_msgs.msg import OccupancyGrid
-from geometry_msgs.msg import Point32, Point, Pose
-from visualization_msgs.msg import Marker, MarkerArray
+from geometry_msgs.msg import PoseStamped
 from builtin_interfaces.msg import Duration
+
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+
+from visualization_msgs.msg import Marker, MarkerArray
+#from rclpy.clock import Clock
+from rclpy.time import Time
 
 import sys, os, inspect
 currentdir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
 sys.path.insert(0, currentdir)
 from math_utils import *
-
-#from rclpy.clock import Clock
-from rclpy.time import Time
+from comms_utils import *
 
 
 
@@ -34,10 +37,12 @@ class PathsPlanner(Operator):
     ):
         configuration = {} if configuration is None else configuration
 
-        self.input_map = inputs.get("Map", None)
-        self.input_divs = inputs.get("Divisions", None)
-        self.output_paths = outputs.get("Paths", None)
+        self.input_wp_req = inputs.get("WPRequest", None)
+        
+        self.output_debug_img = outputs.get("DebugImage", None)
         self.output_markers = outputs.get("Markers", None)
+        
+        self.output_next_wp = outputs.get("NextWP", None)
 
         #Add the common configuration to this node's configuration
         common_cfg_file = str(configuration.get("common_cfg_file", "config/common_cfg.yaml"))
@@ -51,57 +56,203 @@ class PathsPlanner(Operator):
         self.int_bytes_lenght = int(configuration.get("int_bytes_lenght", 4))
         self.wp_separation = float(configuration.get("waypoint_separation", 1.0))
 
-        #Map img interpr getting:
-        self.map_yaml_file = str(configuration.get("map_yaml_file", "maps/turtlebot3_world/turtlebot3_world.yaml"))
-        map_yaml_file = open(self.map_yaml_file)
-        self.map_data_dict = yaml.load(map_yaml_file, Loader=yaml.FullLoader)
-        map_yaml_file.close()
-        self.map_img = cv2.imread(self.map_data_dict.get("image"), cv2.IMREAD_GRAYSCALE)
-        map_negate = bool(self.map_data_dict.get("negate"))
-        self.map_free_thresh = self.map_data_dict.get("free_thresh")
-        self.map_occupied_thresh = self.map_data_dict.get("occupied_thresh")
-        self.img_interpr = self.map_img / 255.0 if map_negate else (255 - self.map_img) / 255.0
-
-        self.map_msg = OccupancyGrid()
-        #self.wp_world_separation = 20
-        self.resolution = int()
-        self.origin = Point()
-
-        self.pending = list()
+        self.cv_bridge = CvBridge()
+        self.debug_img_sent = False
+        
         self.ids = 0
         self.times = 0
         self.colors = [[1.0, 0.5, 1.0, 1.0],
                        [0.0, 1.0, 0.5, 1.0]]
 
-        check_for_type_support(OccupancyGrid)
-        check_for_type_support(Pose)
+        self.pending = list()
+
+        check_for_type_support(PoseStamped)
+        check_for_type_support(Image)
         check_for_type_support(MarkerArray)
 
-    def get_area_from_msg(self, msg_data: bytes) -> tuple():
-        #We dont actually care about the namespaces, but this piece of code will be useful latter.
-        #ns_bytes = msg_data[:self.ns_bytes_lenght]
-        #ns = str()
-        #for i, byte in enumerate(ns_bytes):
-        #    if byte != bytes(1):
-        #        ns = msg_data[i:self.ns_bytes_lenght].decode('utf-8')
-        #        break
-        #print("ns received:", ns)
+        #Load map (yaml fields and img from yaml file):
+        map_yaml_path = str(configuration.get("map_yaml_file", "maps/turtlebot3_world/turtlebot3_world.yaml"))
+        self.load_map(map_yaml_path)
+        #Get the bounding box and divide the map (get the bounding corners):
+        divs = self.divide_map()
+        #For each division get the path and store it:
+        marker_array_msg = MarkerArray()
+        marker_array_msg.markers = []
+        self.paths = []
+        invert = False
+        for div, ns in zip(divs, self.robot_namespaces):
+            path = self.get_path_from_area(div, invert)
+            invert = not invert
+            self.paths.append(path)
+            marker_array_msg.markers += self.get_markers_from_path(path, ns)
+        self.marker_array_msg_ser = _rclpy.rclpy_serialize(marker_array_msg, type(marker_array_msg))
+        
+        
+    def load_map(self, map_yaml_path):
+        map_yaml_file = open(map_yaml_path)
+        self.map_data_dict = yaml.load(map_yaml_file, Loader=yaml.FullLoader)
+        map_yaml_file.close()
 
-        p32_hsize = len(_rclpy.rclpy_serialize(Point32(), Point32)) # 16
-        points_bytes = msg_data[self.ns_bytes_lenght:]
-        return (_rclpy.rclpy_deserialize(points_bytes[:p32_hsize], Point32),
-                _rclpy.rclpy_deserialize(points_bytes[p32_hsize:p32_hsize*2], Point32))
+        #Check the needed fields:
+        keys_needed = ["image", "resolution", "origin",
+                       "occupied_thresh", "free_thresh"]
+        if (not all(map(lambda x: x in self.map_data_dict.keys(), keys_needed))\
+            or len(self.map_data_dict.get("origin")) != 3): #[x, y, yaw]
+            print(f"ERROR: required field/s ({keys_needed}) missing in map yaml file")
+            raise Exception("ERROR: required field/s missing")
+        
+        self.map_img = cv2.imread(self.map_data_dict.get("image"),
+                                  cv2.IMREAD_GRAYSCALE)
+        #Map img values interpretation (Following the specifications in
+        #http://wiki.ros.org/map_server:
+        map_negate = bool(self.map_data_dict.get("negate"))
+        self.img_interpr = self.map_img / 255.0 if map_negate else (255 - self.map_img) / 255.0
 
-    def map2world(self, map_pose: Pose) -> Pose:
-        world_pose = Pose()
-        world_pose.position.x = (map_pose.position.x + self.origin.x) * self.resolution
-        world_pose.position.y = (map_pose.position.y + self.origin.y) * self.resolution
-        world_pose.orientation = map_pose.orientation
+        self.map_free_thresh = self.map_data_dict.get("free_thresh")
+        self.map_occupied_thresh = self.map_data_dict.get("occupied_thresh")
+        self.map_origin = self.map_data_dict.get("origin")
+        self.map_resolution = self.map_data_dict.get("resolution")
+        self.wp_world_separation = round(self.wp_separation / self.map_resolution)
+        
+
+    def factorize(self, n):
+        prime_numbers = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41,
+                         43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97]
+        factors = []
+        if n < 2:
+            return factors
+        
+        for p in prime_numbers:
+            while n % p == 0:
+                factors.append(p)
+                n /= p
+            if (n == 1):
+                break
+        return factors
+    
+    def get_squarest_distribution(self, factors):
+        distribution = [1, 1]
+        for f in reversed(factors): #Starts from the highest to the lowest.
+            if distribution[0] < distribution[1]:
+                distribution[0] *= f #The factor is multiplied by the lowest member of the distribution
+            else:
+                distribution[1] *= f
+        return distribution
+
+    def get_division_shape(self):
+        map_parts = len(self.robot_namespaces)
+        factors = self.factorize(map_parts)
+
+        if len(factors) == 0: #For only one robot
+            return [1, 1]
+        elif len(factors) == 1:
+            factors.append(1)
+            return factors
+        elif len(factors) == 2:
+            return factors
+        else: #More than one single configuration
+            return self.get_squarest_distribution(factors)
+
+    def get_map_upper_bound(self) -> int:
+        height, width = self.img_interpr.shape
+        for j in range(height):
+            for i in range(width):
+                if not (self.map_free_thresh < self.img_interpr[j, i] < self.map_occupied_thresh):
+                    return j
+                
+    def get_map_lower_bound(self) -> int:
+        height, width = self.img_interpr.shape
+        for j in range(height-1, 0, -1):
+            for i in range(width):
+                if not (self.map_free_thresh < self.img_interpr[j, i] < self.map_occupied_thresh):
+                    return j
+
+    def get_map_left_bound(self) -> int:
+        height, width = self.img_interpr.shape
+        for i in range(width):
+            for j in range(height):
+                if not (self.map_free_thresh < self.img_interpr[j, i] < self.map_occupied_thresh):
+                    return i
+
+    def get_map_right_bound(self) -> int:
+        height, width = self.img_interpr.shape
+        for i in range(width-1, 0, -1):
+            for j in range(height):
+                if not (self.map_free_thresh < self.img_interpr[j, i] < self.map_occupied_thresh):
+                    return i
+        
+    def divide_map(self):
+        left_top_point = [
+            self.get_map_left_bound(),
+            self.get_map_upper_bound()]
+        right_bot_point = [
+            self.get_map_right_bound(),
+            self.get_map_lower_bound()]
+        reduced_width = right_bot_point[0] - left_top_point[0]
+        reduced_height = right_bot_point[1] - left_top_point[1]
+
+        division_shape = self.get_division_shape()
+        height, width = self.img_interpr.shape
+        if reduced_width > reduced_height:
+            if division_shape[0] > division_shape[1]:
+                division_shape = list(reversed(division_shape))
+        else:
+            if division_shape[0] < division_shape[1]:
+                division_shape = list(reversed(division_shape))
+        print(f"MAP_PATHS_PLANNER_OP -> Map division shape: {division_shape}")
+
+        x_shift = reduced_width / division_shape[0]
+        y_shift = reduced_height / division_shape[1]
+        bboxes = [] #Map divided into N bboxes:
+        for i in range(division_shape[0]):
+            for j in range(division_shape[1]):
+                bboxes.append([(round(left_top_point[0] + x_shift * i),
+                                round(left_top_point[1] + y_shift * j)),
+                               (round(left_top_point[0] + x_shift * (i+1)),
+                                round(left_top_point[1] + y_shift * (j+1)))])
+
+        ### TO DEBUG:
+        debug_div_img = np.array(self.map_img) #Copy the img.
+        for i in range(division_shape[0] + 1):
+            cv2.line(debug_div_img,
+                     [round(left_top_point[0] + (x_shift*i)),
+                      round(left_top_point[1])],
+                     [round(left_top_point[0] + (x_shift*i)),
+                      round(left_top_point[1] + reduced_height)],
+                     0, 1)
+        for j in range(division_shape[1] + 1):
+            cv2.line(debug_div_img,
+                     [round(left_top_point[0]),
+                      round(left_top_point[1] + y_shift*j)],
+                     [round(left_top_point[0] + reduced_width),
+                      round(left_top_point[1] + y_shift*j)],
+                     0, 1)
+        for bbox in bboxes:
+            for point in bbox:
+                cv2.circle(debug_div_img, point, 2, 0, 2, -1)
+        for i in range(division_shape[0] + 1):
+            for j in range(division_shape[1] + 1):
+                cv2.circle(debug_div_img,
+                           (round(left_top_point[0] + (x_shift*i)), round(left_top_point[1] + y_shift*j)),
+                           2, 0, 2, -1)
+        debug_img_msg = self.cv_bridge.cv2_to_imgmsg(debug_div_img)
+        self.debug_div_img_msg_ser = _rclpy.rclpy_serialize(debug_img_msg, type(debug_img_msg))
+        ###
+
+        return bboxes
+
+    def map2world(self, map_pose: PoseStamped) -> PoseStamped:
+        world_pose = PoseStamped()
+        world_pose.pose.position.x = (map_pose.pose.position.x +
+                                      self.map_origin[0]) * self.map_resolution
+        world_pose.pose.position.y = (map_pose.pose.position.y +
+                                      self.map_origin[1]) * self.map_resolution
+        world_pose.pose.orientation = map_pose.pose.orientation
         return world_pose
 
-    def img2map(self, img_pix: tuple, img_size: tuple) -> tuple:
+    def img2map(self, img_pix: tuple) -> tuple:
         img_x, img_y = img_pix
-        img_width, img_height = img_size
+        img_height, img_width = self.map_img.shape
         map_pos = (float(img_x - (img_width/2)),
                    float(-(img_y - (img_height/2))))
         return map_pos
@@ -115,19 +266,27 @@ class PathsPlanner(Operator):
                     return True
         return False
 
-    def get_path_from_area(self, p1, p2):
+    def get_path_from_area(self, area, inverted=False):
+        p1, p2 = area
         path = list()
-        vertical_range = list(range(int(p1.y), int(p2.y), round(self.wp_world_separation)))
+        vertical_range = list(range(int(p1[1]),
+                                    int(p2[1]),
+                                    round(self.wp_world_separation)))
         orientations = [(0, 0, 3*pi/2), (0, 0, pi/2)]
+        if inverted:
+            vertical_range.reverse()
         ori_index = 0
-        new_img = self.map_img
-        for x in range(int(p1.x), int(p2.x), round(self.wp_world_separation)):
+        #new_img = self.map_img #DEBUG
+        for x in range(int(p1[0]), int(p2[0]), round(self.wp_world_separation)):
             for y in vertical_range:
-                map_x, map_y = self.img2map((x, y), (self.map_msg.info.width, self.map_msg.info.height))
-                wp = Pose()
-                wp.position.x = map_x
-                wp.position.y = map_y
-                wp.orientation = euler2quat(orientations[ori_index%len(orientations)])
+                wp = PoseStamped()
+                wp.header.frame_id = "map"
+                wp.header.stamp.sec = 0
+                wp.header.stamp.nanosec = 0
+                wp.pose.position.x, wp.pose.position.y = self.img2map((x, y))
+                wp.pose.orientation = euler2quat(
+                    orientations[ori_index % len(orientations)]
+                    )
                 
                 #cv2.circle(new_img, (x, y), 2, 0, -1) #DEBUG
                 if (self.img_interpr[y, x] < self.map_free_thresh and
@@ -136,92 +295,53 @@ class PathsPlanner(Operator):
             vertical_range.reverse()
             ori_index += 1
         #cv2.imwrite("/tmp/test_points_map_img.png", new_img) #DEBUG
+        if inverted:
+            path.reverse()
         return path
 
-    def serialize_path(self, path):
-        path_ser = bytes()
-        for waypoint in path: #Serializing every waypoint:
-            path_ser += _rclpy.rclpy_serialize(waypoint, type(waypoint))
-        return path_ser
-
     def get_markers_from_path(self, path, ns):
-        marker_array = MarkerArray()
-        marker_array.markers = []
-        for i, wp in enumerate(path):
+        markers = []
+        for wp in path:
+            self.ids += 1
             color = self.colors[self.times % len(self.colors)]
-            merker_dict = {"id": self.ids+i, "ns": ns, "type": Marker.ARROW,
+            marker_dict = {"id": self.ids, "ns": ns, "type": Marker.ARROW,
                             "frame_locked": False,
                             "lifetime": Duration(sec=0, nanosec=0),
-                            "position": [wp.position.x, wp.position.y, 0.0],
-                            "orientation": wp.orientation,
+                            "position": [wp.pose.position.x, wp.pose.position.y, 0.0],
+                            "orientation": wp.pose.orientation,
                             "scale": [0.1, 0.05, 0.05], "color_rgba": color}
-            self.ids += 1
-            marker_array.markers.append(get_marker(merker_dict))
+            
+            markers.append(get_marker(marker_dict))
         self.times += 1
-        marker_array.markers[0].color.r = 1.0
-        marker_array.markers[0].color.g = 0.0
-        marker_array.markers[0].color.b = 0.0
-        return marker_array
+        #The first one will always be red:
+        markers[0].color.r = 1.0
+        markers[0].color.g = 0.0
+        markers[0].color.b = 0.0
+        return markers
 
-    async def wait_map(self):
-        data_msg = await self.input_map.recv()
-        return ("Map", data_msg)
-
-    async def wait_divs(self):
-        data_msg = await self.input_divs.recv()
-        return ("Divisions", data_msg)
-
-    def create_task_list(self):
-        task_list = [] + self.pending
-
-        if not any(t.get_name() == "Map" for t in task_list):
-            task_list.append(
-                asyncio.create_task(self.wait_map(), name="Map")
-            )
-        if not any(t.get_name() == "Divisions" for t in task_list):
-            task_list.append(
-                asyncio.create_task(self.wait_divs(), name="Divisions")
-            )
-        return task_list
 
     async def iteration(self) -> None:
-        (done, pending) = await asyncio.wait(
-            self.create_task_list(),
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        self.pending = list(pending)
-        for d in done:
-            (who, data_msg) = d.result()
-            if who == "Map":
-                p32_hsize = len(_rclpy.rclpy_serialize(Point32(), Point32)) # 16
-                self.map_msg = _rclpy.rclpy_deserialize(data_msg.data[p32_hsize*2:], OccupancyGrid)
-                self.resolution = self.map_msg.info.resolution
-                self.wp_world_separation = round(self.wp_separation / self.resolution)
-                self.origin = self.map_msg.info.origin.position
 
-                print("PATHS_PLANNER_OP -> map received, resolution:",
-                      self.resolution, (self.origin.x, self.origin.y))
-                
-            if who == "Divisions":
-                ns_bytes = data_msg.data[:self.ns_bytes_lenght]
-                ns_from_bytes = str(ns_bytes.decode('utf-8')).lstrip()
-                #We need to get the original name because in the decoded there
-                #are empty bytes (/x00) that can't be removed otherwise:
-                ns = self.robot_namespaces[self.robot_namespaces.index(ns_from_bytes)]
+        if not self.debug_img_sent:
+            await self.output_debug_img.send(self.debug_div_img_msg_ser)
+            await self.output_markers.send(self.marker_array_msg_ser)
+            
+            #Send first wp for every path:
+            for path, ns in zip(self.paths, self.robot_namespaces):
+                ns_ser = ser_string(ns, self.ns_bytes_lenght, ' ')
+                next_wp = path.pop(0)
+                next_wp_ser = _rclpy.rclpy_serialize(next_wp, type(next_wp))
+                await self.output_next_wp.send(ns_ser + next_wp_ser)
 
-                point1, point2 = self.get_area_from_msg(data_msg.data)
-                print("PATHS_PLANNER_OP -> div message received:", point1, point2)
+            self.debug_img_sent = True
 
-                path = self.get_path_from_area(point1, point2)
-                marker_array_msg = self.get_markers_from_path(path, ns)
-                ser_markers = _rclpy.rclpy_serialize(marker_array_msg, type(marker_array_msg))
-                await self.output_markers.send(ser_markers)
-                
-                path_len_ser = len(path).to_bytes(self.int_bytes_lenght, 'little')
-                path_bytes = self.serialize_path(path)
+        data_msg = await self.input_wp_req.recv()
 
-                #print("PATHS_PLANNER_OP -> sending path:", path)
-                await self.output_paths.send(ns_bytes + path_len_ser + path_bytes)
+        ns = deser_string(data_msg.data, ' ') #data_msg.data is the ns serialized.
+        index = self.robot_namespaces.index(ns)
+        next_wp = self.paths[index].pop(0)
+        next_wp_ser = _rclpy.rclpy_serialize(next_wp, type(next_wp))
+        await self.output_next_wp.send(data_msg.data + next_wp_ser)
 
         return None
 

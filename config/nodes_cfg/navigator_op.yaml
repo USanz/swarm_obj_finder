@@ -5,6 +5,6 @@ uri: file:///home/usanz/zs_t3/t3_ws/src/swarm_obj_finder/zenoh-flow_nodes/naviga
 configuration:
   common_cfg_file: "/home/usanz/zs_t3/t3_ws/src/swarm_obj_finder/config/common_cfg.yaml"
 
-inputs: [Paths, NavStatus1, NavStatus2]
-outputs: [Waypoint1, Waypoint2]
+inputs: [Pose1, Pose2, NextWP]
+outputs: [Waypoint1, Waypoint2, WPRequest]
 tags: []

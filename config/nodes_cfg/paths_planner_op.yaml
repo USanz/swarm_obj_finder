@@ -7,6 +7,6 @@ configuration:
   map_yaml_file: "/home/usanz/zs_t3/t3_ws/src/swarm_obj_finder/maps/turtlebot3_world/turtlebot3_world.yaml"
   waypoint_separation: 0.5 # in meters
 
-inputs: [Map, Divisions]
-outputs: [Paths, Markers]
+inputs: [WPRequest]
+outputs: [DebugImage, Markers, NextWP]
 tags: []
