@@ -15,6 +15,8 @@ import sys, os, inspect
 currentdir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
 sys.path.insert(0, currentdir)
 from comms_utils import *
+from geom_utils import *
+
 
 
 class Navigator(Operator):
@@ -48,6 +50,9 @@ class Navigator(Operator):
         self.robot_namespaces = list(configuration.get("robot_namespaces", ["robot1", "robot2"]))
         self.ns_bytes_lenght = int(configuration.get("ns_bytes_lenght", 64))
         self.int_bytes_lenght = int(configuration.get("int_bytes_lenght", 4))
+
+        #self.resend_timeout_ms = int(configuration.get("resend_timeout_ms", 1000))
+        self.first_time = True
 
         self.pending = list()
         self.current_wps = [PoseStamped()] * self.robot_num
@@ -85,6 +90,14 @@ class Navigator(Operator):
         return task_list
 
     async def iteration(self) -> None:
+        #Make the first request for each robot:
+        if self.first_time:
+            for ns in self.robot_namespaces:
+                print(f"NAVIGATOR_OP -> {ns} sending first waypoint request...")
+                ns_ser = ser_string(ns, self.ns_bytes_lenght, ' ')
+                await self.output_wp_req.send(ns_ser)
+            self.first_time = False
+
         (done, pending) = await asyncio.wait(
             self.create_task_list(),
             return_when=asyncio.FIRST_COMPLETED,
@@ -99,7 +112,7 @@ class Navigator(Operator):
                 
                 ser_current_wp = data_msg.data[self.ns_bytes_lenght:]
                 self.current_wps[index] = deser_ros2_msg(ser_current_wp, PoseStamped)
-                print(self.current_wps[index])
+                print(f"NAVIGATOR_OP -> {self.robot_namespaces[index]} received next waypoint: {get_xy_from_pose(self.current_wps[index])}")
                 await self.wp_outputs[index].send(ser_current_wp)
 
             #Get the poses from odom and transform to map
@@ -110,10 +123,10 @@ class Navigator(Operator):
                 y_dist = pose_stamped.pose.pose.position.y - self.current_wps[index].pose.position.y
                 #ori_err = quat_diff(pose_stamped.pose.pose.orientation - self.current_wps[index].pose.orientation)
                 dist = sqrt(x_dist**2 + y_dist**2)
-                print("dist", x_dist, y_dist, dist)
-                
-                if dist < 0.35:# and ori_err < radians(5):
-                    print("wp reached, requesting next wp")
+                print(f"NAVIGATOR_OP -> Distance from {self.robot_namespaces[index]} to its next wp: {dist}")
+
+                if dist < 0.4:# and ori_err < radians(5):
+                    print("NAVIGATOR_OP -> Waypoint reached, sending next request...")
                     ns = self.robot_namespaces[index]
                     ns_ser = ser_string(ns, self.ns_bytes_lenght, ' ')
                     await self.output_wp_req.send(ns_ser)

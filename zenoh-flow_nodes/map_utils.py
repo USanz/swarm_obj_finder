@@ -5,7 +5,7 @@ from geometry_msgs.msg import PoseStamped
 
 from cv_bridge import CvBridge
 from comms_utils import *
-from math_utils import *
+from geom_utils import *
 
 
 
@@ -102,7 +102,6 @@ def divide_map(itpr_map_img: np.ndarray, map_img: np.ndarray,
     else:
         if division_shape[0] < division_shape[1]:
             division_shape = list(reversed(division_shape))
-    print(f"MAP_PATHS_PLANNER_OP -> Map division shape: {division_shape}")
 
     x_shift = reduced_width / division_shape[0]
     y_shift = reduced_height / division_shape[1]
@@ -174,7 +173,6 @@ def is_near_wall(point: tuple, itpr_map_img: np.ndarray, margin: int, occupied_t
 def get_path_from_area(area: list, itpr_map_img: np.ndarray, thresholds: tuple,
                        wp_world_separation: float, origin: list,
                        resolution: int, inverted=False) -> list:
-    print(area)
     p1, p2 = area
     vertical_range = list(range(int(p1[1]),
                                 int(p2[1]),

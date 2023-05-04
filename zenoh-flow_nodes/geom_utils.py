@@ -1,5 +1,5 @@
 import math
-from geometry_msgs.msg import Quaternion
+from geometry_msgs.msg import Quaternion, PoseStamped
 
 
 
@@ -16,3 +16,7 @@ def quat2euler(q: Quaternion) -> tuple:
     y = -math.pi/2 + 2* math.atan2(math.sqrt(1+2*(q.w*q.y-q.x*q.z)), math.sqrt(1-2*(q.w*q.y-q.x*q.z)))
     z = math.atan2(2*(q.w*q.z + q.x*q.y), 1-2*(q.y**2 + q.z**2))
     return (x, y, z)
+
+
+def get_xy_from_pose(pose: PoseStamped):
+    return (pose.pose.position.x, pose.pose.position.y)

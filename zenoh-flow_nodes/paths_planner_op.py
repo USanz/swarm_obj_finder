@@ -10,7 +10,7 @@ from visualization_msgs.msg import MarkerArray
 import sys, os, inspect
 currentdir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
 sys.path.insert(0, currentdir)
-from math_utils import *
+from geom_utils import *
 from comms_utils import *
 from marker_utils import *
 from map_utils import *
@@ -137,25 +137,20 @@ class PathsPlanner(Operator):
     async def iteration(self) -> None:
 
         if not self.debug_img_sent:
+            print("PATHS_PLANNER_OP -> Sending debug information")
             await self.output_debug_img.send(self.debug_div_img_msg_ser)
             await self.output_markers.send(self.marker_array_msg_ser)
-            
-            #Send first wp for every path:
-            for path, ns in zip(self.paths, self.robot_namespaces):
-                ns_ser = ser_string(ns, self.ns_bytes_lenght, ' ')
-                next_wp = path.pop(0)
-                next_wp_ser = ser_ros2_msg(next_wp)
-                await self.output_next_wp.send(ns_ser + next_wp_ser)
-
             self.debug_img_sent = True
 
+        #Process requests:
         data_msg = await self.input_wp_req.recv()
 
-        ns = deser_string(data_msg.data, ' ') #data_msg.data is the ns serialized.
+        ns = deser_string(data_msg.data, ' ') #who (namespace)
         index = self.robot_namespaces.index(ns)
         next_wp = self.paths[index].pop(0)
         next_wp_ser = ser_ros2_msg(next_wp)
         await self.output_next_wp.send(data_msg.data + next_wp_ser)
+        print(f"PATHS_PLANNER_OP -> Sending next waypoint to {ns}")
 
         return None
 
