@@ -50,13 +50,10 @@ class Navigator(Operator):
         self.int_bytes_lenght = int(configuration.get("int_bytes_lenght", 4))
 
         self.pending = list()
-        self.current_wp = [PoseStamped()] * self.robot_num
+        self.current_wps = [PoseStamped()] * self.robot_num
 
         check_for_type_support(PoseStamped)
         check_for_type_support(PoseWithCovarianceStamped)
-
-    def ser_goal_pose_msg(self, goal_pose_msg: PoseStamped) -> bytes:
-        return _rclpy.rclpy_serialize(goal_pose_msg, PoseStamped)
     
     async def wait_pose1(self):
         data_msg = await self.input_pose1.recv()
@@ -101,19 +98,20 @@ class Navigator(Operator):
                 index = self.robot_namespaces.index(ns)
                 
                 ser_current_wp = data_msg.data[self.ns_bytes_lenght:]
-                self.current_wp[index] = _rclpy.rclpy_deserialize(ser_current_wp, PoseStamped)
-                print(self.current_wp[index])
+                self.current_wps[index] = deser_ros2_msg(ser_current_wp, PoseStamped)
+                print(self.current_wps[index])
                 await self.wp_outputs[index].send(ser_current_wp)
 
             #Get the poses from odom and transform to map
             if "Pose" in who: #who contains "Pose"
                 index = int(who[-1]) -1 #who should be Pose1, Pose2, ...
-                pose_stamped = _rclpy.rclpy_deserialize(data_msg.data, PoseWithCovarianceStamped)
-                x_dist = pose_stamped.pose.pose.position.x - self.current_wp[index].pose.position.x
-                y_dist = pose_stamped.pose.pose.position.y - self.current_wp[index].pose.position.y
-                #ori_err = quat_diff(pose_stamped.pose.pose.orientation - self.current_wp[index].pose.orientation)
+                pose_stamped = deser_ros2_msg(data_msg.data, PoseWithCovarianceStamped)
+                x_dist = pose_stamped.pose.pose.position.x - self.current_wps[index].pose.position.x
+                y_dist = pose_stamped.pose.pose.position.y - self.current_wps[index].pose.position.y
+                #ori_err = quat_diff(pose_stamped.pose.pose.orientation - self.current_wps[index].pose.orientation)
                 dist = sqrt(x_dist**2 + y_dist**2)
                 print("dist", x_dist, y_dist, dist)
+                
                 if dist < 0.35:# and ori_err < radians(5):
                     print("wp reached, requesting next wp")
                     ns = self.robot_namespaces[index]
