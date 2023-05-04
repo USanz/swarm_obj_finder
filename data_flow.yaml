@@ -6,10 +6,10 @@ vars:
 
 
 sources:
-  - id : poses_source
+  - id : tfs_source
     configuration:
-      Pose1: rt/robot1/amcl_pose
-      Pose2: rt/robot2/amcl_pose
+      TF1: rt/robot1/tf
+      TF2: rt/robot2/tf
     descriptor : "builtin://zenoh"
 
 operators:
@@ -53,17 +53,17 @@ links:
     input : NextWP
 
 - from:
-    node : poses_source
-    output : Pose1
+    node : tfs_source
+    output : TF1
   to:
     node : navigator_op
-    input : Pose1
+    input : TF1
 - from:
-    node : poses_source
-    output : Pose2
+    node : tfs_source
+    output : TF2
   to:
     node : navigator_op
-    input : Pose2
+    input : TF2
 
 - from:
     node : paths_planner_op

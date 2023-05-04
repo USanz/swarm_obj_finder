@@ -3,13 +3,17 @@ from zenoh_flow import Input, Output
 from zenoh_flow.types import Context
 from typing import Dict, Any
 
-import yaml, asyncio
+import yaml, asyncio, time
 from math import sqrt
 
 from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
 from rclpy.type_support import check_for_type_support
 
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
+from builtin_interfaces.msg import Duration
+from tf2_msgs.msg import TFMessage
+import tf2_ros, rclpy
+
 
 import sys, os, inspect
 currentdir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
@@ -30,8 +34,8 @@ class Navigator(Operator):
         configuration = {} if configuration is None else configuration
 
         self.input_next_wp = inputs.get("NextWP", None)
-        self.input_pose1 = inputs.get("Pose1", None)
-        self.input_pose2 = inputs.get("Pose2", None)
+        self.input_tf1 = inputs.get("TF1", None)
+        self.input_tf2 = inputs.get("TF2", None)
 
         self.output_wp_req = outputs.get("WPRequest", None)
 
@@ -51,22 +55,26 @@ class Navigator(Operator):
         self.ns_bytes_lenght = int(configuration.get("ns_bytes_lenght", 64))
         self.int_bytes_lenght = int(configuration.get("int_bytes_lenght", 4))
 
-        #self.resend_timeout_ms = int(configuration.get("resend_timeout_ms", 1000))
+        self.goal_checker_min_dist = float(configuration.get("goal_checker_min_dist", 0.3))
+        self.goal_resend_timeout = float(configuration.get("goal_resend_timeout", 1.0))
         self.first_time = True
 
+        self.buffer_core = tf2_ros.BufferCore(Duration(sec=1,
+                                                       nanosec=0)) # 0.7s
+
         self.pending = list()
-        self.current_wps = [PoseStamped()] * self.robot_num
+        self.current_wps = [[PoseStamped(), time.time(), -1.0]] * self.robot_num
 
         check_for_type_support(PoseStamped)
         check_for_type_support(PoseWithCovarianceStamped)
     
-    async def wait_pose1(self):
-        data_msg = await self.input_pose1.recv()
-        return ("Pose1", data_msg)
+    async def wait_tf1(self):
+        data_msg = await self.input_tf1.recv()
+        return ("TF1", data_msg)
     
-    async def wait_pose2(self):
-        data_msg = await self.input_pose2.recv()
-        return ("Pose2", data_msg)
+    async def wait_tf2(self):
+        data_msg = await self.input_tf2.recv()
+        return ("TF2", data_msg)
     
     async def wait_next_wp(self):
         data_msg = await self.input_next_wp.recv()
@@ -74,14 +82,13 @@ class Navigator(Operator):
 
     def create_task_list(self):
         task_list = [] + self.pending
-
-        if not any(t.get_name() == "Pose1" for t in task_list):
+        if not any(t.get_name() == "TF1" for t in task_list):
             task_list.append(
-                asyncio.create_task(self.wait_pose1(), name="Pose1")
+                asyncio.create_task(self.wait_tf1(), name="TF1")
             )
-        if not any(t.get_name() == "Pose2" for t in task_list):
+        if not any(t.get_name() == "TF2" for t in task_list):
             task_list.append(
-                asyncio.create_task(self.wait_pose2(), name="Pose2")
+                asyncio.create_task(self.wait_tf2(), name="TF2")
             )
         if not any(t.get_name() == "NextWP" for t in task_list):
             task_list.append(
@@ -111,25 +118,42 @@ class Navigator(Operator):
                 index = self.robot_namespaces.index(ns)
                 
                 ser_current_wp = data_msg.data[self.ns_bytes_lenght:]
-                self.current_wps[index] = deser_ros2_msg(ser_current_wp, PoseStamped)
-                print(f"NAVIGATOR_OP -> {self.robot_namespaces[index]} received next waypoint: {get_xy_from_pose(self.current_wps[index])}")
+                self.current_wps[index] = [deser_ros2_msg(ser_current_wp, PoseStamped),
+                                           time.time(), -1.0]
+                print(f"NAVIGATOR_OP -> {self.robot_namespaces[index]} received next waypoint, sending it: {get_xy_from_pose(self.current_wps[index][0])}")
                 await self.wp_outputs[index].send(ser_current_wp)
 
-            #Get the poses from odom and transform to map
-            if "Pose" in who: #who contains "Pose"
-                index = int(who[-1]) -1 #who should be Pose1, Pose2, ...
-                pose_stamped = deser_ros2_msg(data_msg.data, PoseWithCovarianceStamped)
-                x_dist = pose_stamped.pose.pose.position.x - self.current_wps[index].pose.position.x
-                y_dist = pose_stamped.pose.pose.position.y - self.current_wps[index].pose.position.y
-                #ori_err = quat_diff(pose_stamped.pose.pose.orientation - self.current_wps[index].pose.orientation)
-                dist = sqrt(x_dist**2 + y_dist**2)
-                print(f"NAVIGATOR_OP -> Distance from {self.robot_namespaces[index]} to its next wp: {dist}")
+            if "TF" in who: #who contains "TF" or "TF_static".
+                index = int(who[-1]) -1 #who should be TF1, TF2, ...
+                ns = self.robot_namespaces[index]
+                self.tf_msg = deser_ros2_msg(data_msg.data, TFMessage)
+                for tf in self.tf_msg.transforms:
 
-                if dist < 0.4:# and ori_err < radians(5):
-                    print("NAVIGATOR_OP -> Waypoint reached, sending next request...")
-                    ns = self.robot_namespaces[index]
-                    ns_ser = ser_string(ns, self.ns_bytes_lenght, ' ')
-                    await self.output_wp_req.send(ns_ser)
+                    tf_names = ["map->odom",
+                                "odom->base_footprint"]
+                    key = tf.header.frame_id + "->" + tf.child_frame_id
+                    if key in tf_names:
+                        self.buffer_core.set_transform(tf, "default_authority")
+                    
+                        try:
+                            new_tf = self.buffer_core.lookup_transform_core('map', 'base_footprint', rclpy.time.Time())
+                            new_tf.child_frame_id = 'world_robot_pos'
+
+                            x_dist = new_tf.transform.translation.x - self.current_wps[index][0].pose.position.x
+                            y_dist = new_tf.transform.translation.y - self.current_wps[index][0].pose.position.y
+                            dist = sqrt(x_dist**2 + y_dist**2)
+                            print(ns, "distance:", dist)
+                            self.current_wps[index][2] = dist
+                            #ori_err = quat_diff(pose_stamped.pose.pose.orientation - self.current_wps[index][0].pose.orientation)
+                            if dist < self.goal_checker_min_dist:# and ori_err < radians(5):
+                                print("NAVIGATOR_OP -> Waypoint reached, sending next request...")
+                                ns = self.robot_namespaces[index]
+                                ns_ser = ser_string(ns, self.ns_bytes_lenght, ' ')
+                                await self.output_wp_req.send(ns_ser)
+                            
+                        except Exception as e:
+                            pass
+                            #print(e)
 
     def finalize(self) -> None:
         return None

@@ -4,7 +4,9 @@ uri: file:///home/usanz/zs_t3/t3_ws/src/swarm_obj_finder/zenoh-flow_nodes/naviga
 
 configuration:
   common_cfg_file: "/home/usanz/zs_t3/t3_ws/src/swarm_obj_finder/config/common_cfg.yaml"
+  goal_checker_min_dist: 0.3 #m
+  goal_resend_timeout:   3.0 #s
 
-inputs: [Pose1, Pose2, NextWP]
+inputs: [TF1, TF2, NextWP]
 outputs: [Waypoint1, Waypoint2, WPRequest]
 tags: []
