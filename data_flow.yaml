@@ -12,6 +12,12 @@ sources:
       TF2: rt/robot2/tf
     descriptor : "builtin://zenoh"
 
+  - id : imgs_source
+    configuration:
+      Image1: rt/robot1/camera/image_raw
+      Image2: rt/robot2/camera/image_raw
+    descriptor : "builtin://zenoh"
+
 operators:
   - id : paths_planner_op
     descriptor : "{{ BASE_DIR_PATH }}/config/nodes_cfg/paths_planner_op.yaml"
@@ -19,15 +25,19 @@ operators:
   - id : navigator_op
     descriptor : "{{ BASE_DIR_PATH }}/config/nodes_cfg/navigator_op.yaml"
 
-sinks:
-  - id : markers_sink
-    configuration:
-      Markers: rt/debug/markers # no namespaces (global topic /debug/markers in ROS2)
-    descriptor : "builtin://zenoh"
+  - id : obj_detector_op
+    descriptor : "{{ BASE_DIR_PATH }}/config/nodes_cfg/obj_detector_op.yaml"
 
-  - id : debug_image
+  - id : obj_pos_infer_op
+    descriptor : "{{ BASE_DIR_PATH }}/config/nodes_cfg/obj_pos_infer_op.yaml"
+
+sinks:
+  - id : debug_sink
     configuration:
-      DebugImage: rt/debug/map_div_img # no namespaces (global topic /debug/map_div_img in ROS2)
+      DebugMapDiv: rt/debug/map_div_img # no namespaces (global topic /debug/map_div_img in ROS2)
+      DebugMarkers: rt/debug/markers    # no namespaces (global topic /debug/markers in ROS2)
+      DebugImgFiltered1: rt/robot1/debug/filter_img
+      DebugImgFiltered2: rt/robot1/debug/filter_img
     descriptor : "builtin://zenoh"
     
   - id : goal_pose_sink
@@ -40,6 +50,46 @@ sinks:
 
 links:
 - from:
+    node : imgs_source
+    output : Image1
+  to:
+    node : obj_detector_op
+    input : Image1
+- from:
+    node : imgs_source
+    output : Image2
+  to:
+    node : obj_detector_op
+    input : Image2
+
+- from:
+    node : obj_detector_op
+    output : ObjDetected
+  to:
+    node : obj_pos_infer_op
+    input : ObjDetected
+- from:
+    node : obj_detector_op
+    output : DebugImgFiltered1
+  to:
+    node : debug_sink
+    input : DebugImgFiltered1
+- from:
+    node : obj_detector_op
+    output : DebugImgFiltered2
+  to:
+    node : debug_sink
+    input : DebugImgFiltered2
+
+- from:
+    node : obj_pos_infer_op
+    output : WorldPosition
+  to:
+    node : navigator_op
+    input : WorldPosition
+
+
+- from:
     node : navigator_op
     output : WPRequest
   to:
@@ -51,6 +101,7 @@ links:
   to:
     node : navigator_op
     input : NextWP
+
 
 - from:
     node : tfs_source
@@ -65,18 +116,21 @@ links:
     node : navigator_op
     input : TF2
 
+
 - from:
     node : paths_planner_op
-    output : Markers
+    output : DebugMarkers
   to:
-    node : markers_sink
-    input : Markers
+    node : debug_sink
+    input : DebugMarkers
+
 - from:
     node : paths_planner_op
-    output : DebugImage
+    output : DebugMapDiv
   to:
-    node : debug_image
-    input : DebugImage
+    node : debug_sink
+    input : DebugMapDiv
+
 
 - from:
     node : navigator_op
@@ -91,6 +145,10 @@ links:
     node : goal_pose_sink
     input : Waypoint2
 
+
+
 mapping:
   paths_planner_op: computer
   navigator_op: computer
+  obj_detector_op: computer
+  obj_pos_infer_op: computer

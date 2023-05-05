@@ -9,7 +9,7 @@ from math import sqrt
 from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
 from rclpy.type_support import check_for_type_support
 
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseStamped
 from builtin_interfaces.msg import Duration
 from tf2_msgs.msg import TFMessage
 import tf2_ros, rclpy
@@ -34,6 +34,7 @@ class Navigator(Operator):
         configuration = {} if configuration is None else configuration
 
         self.input_next_wp = inputs.get("NextWP", None)
+        self.input_world_pos = inputs.get("WorldPosition", None)
         self.input_tf1 = inputs.get("TF1", None)
         self.input_tf2 = inputs.get("TF2", None)
 
@@ -53,7 +54,6 @@ class Navigator(Operator):
         self.robot_num = int(configuration.get("swarm_size", 2))
         self.robot_namespaces = list(configuration.get("robot_namespaces", ["robot1", "robot2"]))
         self.ns_bytes_lenght = int(configuration.get("ns_bytes_lenght", 64))
-        self.int_bytes_lenght = int(configuration.get("int_bytes_lenght", 4))
 
         self.goal_checker_min_dist = float(configuration.get("goal_checker_min_dist", 0.3))
         self.goal_resend_timeout = float(configuration.get("goal_resend_timeout", 1.0))
@@ -64,9 +64,9 @@ class Navigator(Operator):
 
         self.pending = list()
         self.current_wps = [[PoseStamped(), time.time(), -1.0]] * self.robot_num
+        self.object_found = False
 
         check_for_type_support(PoseStamped)
-        check_for_type_support(PoseWithCovarianceStamped)
     
     async def wait_tf1(self):
         data_msg = await self.input_tf1.recv()
@@ -79,6 +79,10 @@ class Navigator(Operator):
     async def wait_next_wp(self):
         data_msg = await self.input_next_wp.recv()
         return ("NextWP", data_msg)
+
+    async def wait_world_pos(self):
+        data_msg = await self.input_world_pos.recv()
+        return ("WorldPosition", data_msg)
 
     def create_task_list(self):
         task_list = [] + self.pending
@@ -93,6 +97,10 @@ class Navigator(Operator):
         if not any(t.get_name() == "NextWP" for t in task_list):
             task_list.append(
                 asyncio.create_task(self.wait_next_wp(), name="NextWP")
+            )
+        if not any(t.get_name() == "WorldPosition" for t in task_list):
+            task_list.append(
+                asyncio.create_task(self.wait_world_pos(), name="WorldPosition")
             )
         return task_list
 
@@ -113,7 +121,7 @@ class Navigator(Operator):
         for d in done:
             (who, data_msg) = d.result()
 
-            if who == "NextWP":
+            if who == "NextWP" and not self.object_found:
                 ns = deser_string(data_msg.data[:self.ns_bytes_lenght], ' ')
                 index = self.robot_namespaces.index(ns)
                 
@@ -123,7 +131,7 @@ class Navigator(Operator):
                 print(f"NAVIGATOR_OP -> {self.robot_namespaces[index]} received next waypoint, sending it: {get_xy_from_pose(self.current_wps[index][0])}")
                 await self.wp_outputs[index].send(ser_current_wp)
 
-            if "TF" in who: #who contains "TF" or "TF_static".
+            if "TF" in who and not self.object_found: #who contains "TF" or "TF_static".
                 index = int(who[-1]) -1 #who should be TF1, TF2, ...
                 ns = self.robot_namespaces[index]
                 self.tf_msg = deser_ros2_msg(data_msg.data, TFMessage)
@@ -142,7 +150,7 @@ class Navigator(Operator):
                             x_dist = new_tf.transform.translation.x - self.current_wps[index][0].pose.position.x
                             y_dist = new_tf.transform.translation.y - self.current_wps[index][0].pose.position.y
                             dist = sqrt(x_dist**2 + y_dist**2)
-                            print(ns, "distance:", dist)
+                            #print(ns, "distance:", dist)
                             self.current_wps[index][2] = dist
                             #ori_err = quat_diff(pose_stamped.pose.pose.orientation - self.current_wps[index][0].pose.orientation)
                             if dist < self.goal_checker_min_dist:# and ori_err < radians(5):
@@ -154,7 +162,17 @@ class Navigator(Operator):
                         except Exception as e:
                             pass
                             #print(e)
-
+            
+            if who == "WorldPosition":
+                self.object_found = True
+                ser_ns = data_msg.data[:self.ns_bytes_lenght]
+                ns = deser_string(ser_ns)
+                index = self.robot_namespaces.index(ns)
+                ser_msg = ser_ros2_msg(self.current_wps[index][0])
+                for i, output in enumerate(self.wp_outputs):
+                    print(f"NAVIGATOR_OP -> Sending {self.robot_namespaces[i]} to {ns}'s position: {self.current_wps[index][0]}")
+                    output.send(ser_msg) # Send them all to the position of the robot who found the object
+    
     def finalize(self) -> None:
         return None
 

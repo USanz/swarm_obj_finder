@@ -29,8 +29,8 @@ class PathsPlanner(Operator):
 
         self.input_wp_req = inputs.get("WPRequest", None)
         
-        self.output_debug_img = outputs.get("DebugImage", None)
-        self.output_markers = outputs.get("Markers", None)
+        self.output_debug_img = outputs.get("DebugMapDiv", None)
+        self.output_markers = outputs.get("DebugMarkers", None)
         
         self.output_next_wp = outputs.get("NextWP", None)
 
@@ -45,7 +45,6 @@ class PathsPlanner(Operator):
         self.robot_namespaces = list(configuration.get("robot_namespaces",
                                                        ["robot1", "robot2"]))
         self.ns_bytes_lenght = int(configuration.get("ns_bytes_lenght", 64))
-        self.int_bytes_lenght = int(configuration.get("int_bytes_lenght", 4))
         self.wp_separation = float(configuration.get("waypoint_separation", 1.0))
 
         self.debug_img_sent = False

@@ -7,6 +7,6 @@ configuration:
   goal_checker_min_dist: 0.3 #m
   goal_resend_timeout:   3.0 #s
 
-inputs: [TF1, TF2, NextWP]
+inputs: [TF1, TF2, NextWP, WorldPosition]
 outputs: [Waypoint1, Waypoint2, WPRequest]
 tags: []

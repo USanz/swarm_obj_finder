@@ -8,5 +8,5 @@ configuration:
   waypoint_separation: 0.5 # in meters
 
 inputs: [WPRequest]
-outputs: [DebugImage, Markers, NextWP]
+outputs: [DebugMapDiv, DebugMarkers, NextWP]
 tags: []

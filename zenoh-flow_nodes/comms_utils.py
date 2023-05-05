@@ -18,3 +18,12 @@ def ser_ros2_msg(ros2_msg) -> bytes:
 def deser_ros2_msg(ser_ros2_msg: bytes, ros2_type):
     check_for_type_support(ros2_type)
     return _rclpy.rclpy_deserialize(ser_ros2_msg, ros2_type)
+
+def ser_int(i: int, bytes_lenght: int):
+    return i.to_bytes(bytes_lenght, 'big')
+
+def ser_int_list_obj(l: list, int_bytes_lenght):
+    b = bytes()
+    for i in l:
+        b += ser_int(int(i), int_bytes_lenght)
+    return b

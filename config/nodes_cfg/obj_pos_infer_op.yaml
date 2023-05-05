@@ -1,0 +1,10 @@
+id: obj_pos_infer_op
+
+uri: file:///home/usanz/zs_t3/t3_ws/src/swarm_obj_finder/zenoh-flow_nodes/obj_pos_infer_op.py
+
+configuration:
+  common_cfg_file: "/home/usanz/zs_t3/t3_ws/src/swarm_obj_finder/config/common_cfg.yaml"
+
+inputs: [ObjDetected]
+outputs: [WorldPosition]
+tags: []
