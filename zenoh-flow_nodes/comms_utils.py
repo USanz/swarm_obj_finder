@@ -22,8 +22,17 @@ def deser_ros2_msg(ser_ros2_msg: bytes, ros2_type):
 def ser_int(i: int, bytes_lenght: int):
     return i.to_bytes(bytes_lenght, 'big')
 
-def ser_int_list_obj(l: list, int_bytes_lenght):
+def deser_int(int_bytes: bytes):
+    return int.from_bytes(int_bytes, 'big')
+
+def ser_int_list(l: list, int_bytes_lenght):
     b = bytes()
     for i in l:
         b += ser_int(int(i), int_bytes_lenght)
     return b
+
+def deser_int_list(bytes_list: list, int_bytes_lenght):
+    l = list()
+    for i in range(0, len(bytes_list), int_bytes_lenght):
+        l.append(deser_int(bytes_list[i:i+int_bytes_lenght]))
+    return l

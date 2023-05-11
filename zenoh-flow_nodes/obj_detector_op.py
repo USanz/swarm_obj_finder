@@ -3,7 +3,7 @@ from zenoh_flow import Input, Output
 from zenoh_flow.types import Context
 from typing import Dict, Any
 
-import yaml, asyncio, numpy as np, cv2
+import asyncio, numpy as np, cv2
 
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
@@ -29,16 +29,18 @@ class PathsPlanner(Operator):
         self.input_img2 = inputs.get("Image2", None)
         
         self.output_obj_detected = outputs.get("ObjDetected", None)
-        self.output_debug_img1 = outputs.get("DebugImgFiltered1", None)
-        self.output_debug_img2 = outputs.get("DebugImgFiltered2", None)
+        output_debug_img1 = outputs.get("DebugImgFiltered1", None)
+        output_debug_img2 = outputs.get("DebugImgFiltered2", None)
+        self.output_debug_imgs = [output_debug_img1, output_debug_img2]
 
         #Add the common configuration to this node's configuration
-        common_cfg_file = str(configuration.get("common_cfg_file",
-                                                "config/common_cfg.yaml"))
-        common_cfg_yaml_file = open(common_cfg_file)
-        common_cfg_dict = yaml.load(common_cfg_yaml_file, Loader=yaml.FullLoader)
-        common_cfg_yaml_file.close()
-        configuration.update(common_cfg_dict)
+        #common_cfg_file = str(configuration.get("common_cfg_file",
+        #                                        "config/common_cfg.yaml"))
+        #common_cfg_yaml_file = open(common_cfg_file)
+        #common_cfg_dict = yaml.load(common_cfg_yaml_file,
+        #                            Loader=yaml.FullLoader)
+        #common_cfg_yaml_file.close()
+        #configuration.update(common_cfg_dict)
 
         self.robot_namespaces = list(configuration.get("robot_namespaces",
                                                        ["robot1", "robot2"]))
@@ -51,6 +53,7 @@ class PathsPlanner(Operator):
                                                        [16, 225, 105])))
         
         self.bridge = CvBridge()
+        self.obj_found = False
 
         self.pending = list()
 
@@ -113,26 +116,23 @@ class PathsPlanner(Operator):
 
             if "Image" in who: #who contains "Image".
                 index = int(who[-1]) -1 #who should be Image1, Image2, ...
-                if index == 0: #Now only for robot 1 to make tests
-                    img_msg = deser_ros2_msg(data_msg.data, Image)
-                    img = self.bridge.imgmsg_to_cv2(img_msg,
-                                                    desired_encoding='passthrough')
+                img_msg = deser_ros2_msg(data_msg.data, Image)
+                img = self.bridge.imgmsg_to_cv2(img_msg,
+                                                desired_encoding='passthrough')
 
-                    centroid, debug_img = self.detect_object(img, 100, 100,
-                                                             self.lower_threshold,
-                                                             self.upper_threshold)
-                    await self.output_debug_img1.send(debug_img)
+                centroid, ser_debug_img = self.detect_object(img, 100, 100,
+                                                         self.lower_threshold,
+                                                         self.upper_threshold)
+                await self.output_debug_imgs[index].send(ser_debug_img)
 
-                    if centroid != None:
-                        print(centroid)
-                        ser_msg = ser_string(self.robot_namespaces[index],
-                                             self.ns_bytes_lenght)
-                        ser_msg += ser_int_list_obj(centroid,
-                                                    self.int_bytes_lenght)
-                        await self.output_obj_detected.send(ser_msg)
-                    
-
-
+                if centroid != None:# and not self.obj_found:
+                    ser_msg = ser_string(self.robot_namespaces[index],
+                                         self.ns_bytes_lenght)
+                    ser_msg += ser_int_list(centroid,
+                                            self.int_bytes_lenght)
+                    await self.output_obj_detected.send(ser_msg)
+                    self.obj_found = True
+        
         return None
 
     def finalize(self) -> None:
