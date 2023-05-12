@@ -36,3 +36,9 @@ def deser_int_list(bytes_list: list, int_bytes_lenght):
     for i in range(0, len(bytes_list), int_bytes_lenght):
         l.append(deser_int(bytes_list[i:i+int_bytes_lenght]))
     return l
+
+#To get the asynchronous functions for the inputs
+def get_input_func( name, input):
+    async def func():
+        return (name, await input.recv())
+    return func

@@ -3,7 +3,7 @@ from zenoh_flow import Input, Output
 from zenoh_flow.types import Context
 from typing import Dict, Any
 
-import time, asyncio
+import time, asyncio, yaml
 from numpy import arctan2, rad2deg, cos, sin, deg2rad
 
 from geometry_msgs.msg import PoseStamped
@@ -19,6 +19,18 @@ from marker_utils import *
 
 
 
+INPUT_OBJ_DETECTED = "ObjDetected"
+INPUTS_ROBOT_POSES = ["RobotPose1", "RobotPose2"]
+INPUTS_CAM_INFOS   = ["CamInfo1", "CamInfo2"]
+INPUTS_LIDARS      = ["Lidar1", "Lidar2"]
+
+OUTPUT_WORLD_OBJ_POSE = "WorldObjPose"
+OUTPUT_DEBUG_MARKER   = "DebugMarkers"
+
+MARKER_FRAME_ID = "map"
+
+
+
 class PathsPlanner(Operator):
     def __init__(
         self,
@@ -29,37 +41,44 @@ class PathsPlanner(Operator):
     ):
         configuration = {} if configuration is None else configuration
 
-        self.input_robot_pose1 = inputs.get("RobotPose1", None)
-        self.input_robot_pose2 = inputs.get("RobotPose2", None)
-        self.input_obj_detected = inputs.get("ObjDetected", None)
+        #Single inputs:
+        self.input_obj_detected = inputs.get(INPUT_OBJ_DETECTED, None)
+        #Single outputs:
+        self.output_world_pos = outputs.get(OUTPUT_WORLD_OBJ_POSE, None)
+        self.output_debug_marker = outputs.get(OUTPUT_DEBUG_MARKER, None)
+        
+        self.inputs_robot_poses = list()
+        self.inputs_cam_infos = list()
+        self.inputs_lidars = list()
+        for in_rob_pose, in_cam_info, in_lidar in zip(INPUTS_ROBOT_POSES,
+                                                      INPUTS_CAM_INFOS,
+                                                      INPUTS_LIDARS):
+            #Listed inputs:
+            self.inputs_robot_poses.append(inputs.get(in_rob_pose, None))
+            self.inputs_cam_infos.append(inputs.get(in_cam_info, None))
+            self.inputs_lidars.append(inputs.get(in_lidar, None))
 
-        input_cam_info1 = inputs.get("CamInfo1", None)
-        input_cam_info2 = inputs.get("CamInfo2", None)
-        self.inputs_cam_info = [input_cam_info1, input_cam_info2]
-
-        self.input_lidar1 = inputs.get("Lidar1", None)
-        self.input_lidar2 = inputs.get("Lidar2", None)
-        self.inputs_lidar = [self.input_lidar1, self.input_lidar2]
-
-        self.output_world_pos = outputs.get("WorldObjPose", None)
-        self.output_debug_marker = outputs.get("DebugMarkers", None)
+        #With the new update the common config file is not needed anymore since
+        #the it can be put directly in the data-flow yaml file:
 
         #Add the common configuration to this node's configuration
-        #common_cfg_file = str(configuration.get("common_cfg_file",
-        #                                        "config/common_cfg.yaml"))
-        #common_cfg_yaml_file = open(common_cfg_file)
-        #common_cfg_dict = yaml.load(common_cfg_yaml_file,
-        #                            Loader=yaml.FullLoader)
-        #common_cfg_yaml_file.close()
-        #configuration.update(common_cfg_dict)
+        common_cfg_file = str(configuration.get("common_cfg_file",
+                                                "config/common_cfg.yaml"))
+        common_cfg_yaml_file = open(common_cfg_file)
+        common_cfg_dict = yaml.load(common_cfg_yaml_file,
+                                    Loader=yaml.FullLoader)
+        common_cfg_yaml_file.close()
+        configuration.update(common_cfg_dict)
 
+        #Get configuration values:
         self.robot_num = int(configuration.get("swarm_size", 2))
         self.robot_namespaces = list(configuration.get("robot_namespaces",
                                                        ["robot1", "robot2"]))
-        self.ns_bytes_lenght = int(configuration.get("ns_bytes_lenght", 64))
-        self.int_bytes_lenght = int(configuration.get("int_bytes_lenght", 4))
+        self.ns_bytes_length = int(configuration.get("ns_bytes_length", 64))
+        self.int_bytes_length = int(configuration.get("int_bytes_length", 4))
         self.lidar_threshold = int(configuration.get("lidar_threshold", 4))
 
+        #Other attributes needed:
         self.first_time = True
         self.pending = list()
         self.cam_infos = [CameraInfo()] * self.robot_num
@@ -70,8 +89,8 @@ class PathsPlanner(Operator):
     def lidar_mean(self, lidar: LaserScan, angle: int, thresh: int) -> float:
         lidar_ht = round(thresh / 2)
         avg = 0
-        print("distance:", lidar.ranges[angle])
         counter = 0
+        #Get the mean of a lidar range without having into account inf values:
         for i in range(angle - lidar_ht, angle + lidar_ht):
             if i >= 360:
                 i -= 360
@@ -114,11 +133,12 @@ class PathsPlanner(Operator):
         marker_arr = MarkerArray()
         #Marker (blue) from map frame (absolute coords)
         marker_dict = {"id": 1000, "ns": "obj_pose", "frame_locked": False,
-                       "frame_id":"map", "lifetime_s": 0, "lifetime_ns":0,
+                       "frame_id": MARKER_FRAME_ID, "scale": [0.2, 0.1, 0.1], 
+                       "lifetime_s": 0, "lifetime_ns":0,
                        "pose": [world_pose.pose.position.x,
                                 world_pose.pose.position.y,
                                 world_pose.pose.orientation], # [x, y, yaw(quat)]
-                       "scale": [0.2, 0.1, 0.1], "color_rgba": [0.2, 0.2, 1.0, 1.0]}
+                       "color_rgba": [0.2, 0.2, 1.0, 1.0]}
         marker_arr.markers.append(get_marker(marker_dict))
 
         #Marker (pinkie) from base_scan frame (relative to the robot coords)
@@ -135,56 +155,42 @@ class PathsPlanner(Operator):
                       x_world_dist_from_rob, y_world_dist_from_rob]
         return (world_pose, debug_info)
 
-    async def wait_obj_detected(self):
-        data_msg = await self.input_obj_detected.recv()
-        return ("ObjDetected", data_msg)
-
-    async def wait_robot_pose1(self):
-        data_msg = await self.input_robot_pose1.recv()
-        return ("RobotPose1", data_msg)
-
-    async def wait_robot_pose2(self):
-        data_msg = await self.input_robot_pose2.recv()
-        return ("RobotPose2", data_msg)
-
-    async def wait_lidar1(self):
-        data_msg = await self.input_lidar1.recv()
-        return ("Lidar1", data_msg)
-
-    async def wait_lidar2(self):
-        data_msg = await self.input_lidar2.recv()
-        return ("Lidar2", data_msg)
-    
     def create_task_list(self):
         task_list = [] + self.pending
-        if not any(t.get_name() == "ObjDetected" for t in task_list):
+
+        #For every listed input append an async task to the task_list:
+        for i, (in_rob_pose, in_lidar) in enumerate(
+            zip(INPUTS_ROBOT_POSES, INPUTS_LIDARS)
+            ):
+            if not any(t.get_name() == in_rob_pose for t in task_list):
+                task_list.append(
+                    asyncio.create_task(
+                        get_input_func(in_rob_pose, self.inputs_robot_poses[i])(),
+                        name=in_rob_pose
+                    )
+                )
+            if not any(t.get_name() == in_lidar for t in task_list):
+                task_list.append(
+                    asyncio.create_task(
+                        get_input_func(in_lidar, self.inputs_lidars[i])(),
+                        name=in_lidar
+                    )
+                )
+        #Append single inputs async task to the task_list one by one:
+        if not any(t.get_name() == INPUT_OBJ_DETECTED for t in task_list):
             task_list.append(
-                asyncio.create_task(self.wait_obj_detected(), name="ObjDetected")
+                asyncio.create_task(get_input_func(INPUT_OBJ_DETECTED,
+                                                   self.input_obj_detected)(),
+                                    name=INPUT_OBJ_DETECTED)
             )
-        if not any(t.get_name() == "RobotPose1" for t in task_list):
-            task_list.append(
-                asyncio.create_task(self.wait_robot_pose1(), name="RobotPose1")
-            )
-        if not any(t.get_name() == "RobotPose2" for t in task_list):
-            task_list.append(
-                asyncio.create_task(self.wait_robot_pose2(), name="RobotPose2")
-            )
-        if not any(t.get_name() == "Lidar1" for t in task_list):
-            task_list.append(
-                asyncio.create_task(self.wait_lidar1(), name="Lidar1")
-            )
-        if not any(t.get_name() == "Lidar2" for t in task_list):
-            task_list.append(
-                asyncio.create_task(self.wait_lidar2(), name="Lidar2")
-            )
+        
         return task_list
 
     async def iteration(self) -> None:
-
+        #Get the cam info of each robot only once:
         if self.first_time:
-            #Get the cam info of each robot
             for i in range(self.robot_num):
-                cam_info_msg_ser = await self.inputs_cam_info[i].recv()
+                cam_info_msg_ser = await self.inputs_cam_infos[i].recv()
                 self.cam_infos[i] = deser_ros2_msg(cam_info_msg_ser.data, CameraInfo)
             self.first_time = False
 
@@ -196,27 +202,33 @@ class PathsPlanner(Operator):
         for d in done:
             (who, data_msg) = d.result()
 
-            if "RobotPose" in who: #who contains "RobotPose".
+            #Get the robot poses:
+            if who in INPUTS_ROBOT_POSES: #who contains "RobotPose".
                 index = int(who[-1]) -1 #who should be RobotPose1, RobotPose2, ...
                 self.robot_poses[index] = deser_ros2_msg(data_msg.data,
                                                          PoseStamped)
 
-            if "Lidar" in who: #who contains "Lidar".
+            #Get the lidars:
+            if who in INPUTS_LIDARS: #who contains "Lidar".
                 index = int(who[-1]) -1 #who should be Lidar1, Lidar2, ...
                 self.lidars[index] = deser_ros2_msg(data_msg.data, LaserScan)
 
-            if who == "ObjDetected":
-                ser_ns = data_msg.data[:self.ns_bytes_lenght]
+            #Object detected by the obj_detector_op node:
+            if who == INPUT_OBJ_DETECTED:
+                ser_ns = data_msg.data[:self.ns_bytes_length]
                 ns = deser_string(ser_ns)
                 index = self.robot_namespaces.index(ns)
+                #Get the centroid from the msg:
                 centroid = deser_int_list(
-                    data_msg.data[self.ns_bytes_lenght:], self.int_bytes_lenght
+                    data_msg.data[self.ns_bytes_length:], self.int_bytes_length
                     )
+                #Convert it from 2D to 3D thanks to the lidar:
                 world_pose, debug_info = self.img2world(tuple(centroid),
                                                         self.cam_infos[index],
                                                         self.robot_poses[index],
                                                         self.lidars[index])
-                if time.time() - self.last_time > 1.0: #send the pose every second
+                #Send the 3D pose every second:
+                if time.time() - self.last_time > 1.0:
                     debug_marker_msg, ang, dist, xdist, ydist,  = debug_info
 
                     ser_world_pos = ser_ros2_msg(world_pose)

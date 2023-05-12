@@ -3,7 +3,7 @@ from zenoh_flow import Input, Output
 from zenoh_flow.types import Context
 from typing import Dict, Any
 
-import asyncio, time
+import asyncio, time, yaml
 from math import sqrt
 
 from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
@@ -23,6 +23,16 @@ from geom_utils import *
 
 
 
+INPUT_NEXT_WP        = "NextWP"
+INPUT_WORLD_OBJ_POSE = "WorldObjPose"
+INPUTS_TFS           = ["TF1", "TF2"]
+
+OUTPUT_WP_REQ       = "WPRequest"
+OUTPUTS_ROBOT_POSES = ["RobotPose1", "RobotPose2"]
+OUTPUTS_WPS         = ["Waypoint1", "Waypoint2"]
+
+
+
 class Navigator(Operator):
     def __init__(
         self,
@@ -33,35 +43,41 @@ class Navigator(Operator):
     ):
         configuration = {} if configuration is None else configuration
 
-        self.input_next_wp = inputs.get("NextWP", None)
-        self.input_world_pos = inputs.get("WorldObjPose", None)
-
-        self.input_tf1 = inputs.get("TF1", None)
-        self.input_tf2 = inputs.get("TF2", None)
-
-        output_robot_pose1 = outputs.get("RobotPose1", None)
-        output_robot_pose2 = outputs.get("RobotPose2", None)
-        self.output_robot_poses = [output_robot_pose1, output_robot_pose2]
+        #Single inputs:
+        self.input_next_wp = inputs.get(INPUT_NEXT_WP, None)
+        self.input_world_pos = inputs.get(INPUT_WORLD_OBJ_POSE, None)
+        #Single outputs:
+        self.output_wp_req = outputs.get(OUTPUT_WP_REQ, None)
         
-        self.output_wp_req = outputs.get("WPRequest", None)
+        self.inputs_tfs = list()
+        self.outputs_robot_poses = list()
+        self.outputs_wps = list()
+        for in_tf, out_rob_pose, out_wp in zip(INPUTS_TFS,
+                                               OUTPUTS_ROBOT_POSES,
+                                               OUTPUTS_WPS):
+            #Listed inputs:
+            self.inputs_tfs.append(inputs.get(in_tf, None))
+            #Listed outputs:
+            self.outputs_robot_poses.append(outputs.get(out_rob_pose, None))
+            self.outputs_wps.append(outputs.get(out_wp, None))
 
-        output_wps1 = outputs.get("Waypoint1", None)
-        output_wps2 = outputs.get("Waypoint2", None)
-        self.wp_outputs = [output_wps1, output_wps2]
+        #With the new update the common config file is not needed anymore since
+        #the it can be put directly in the data-flow yaml file:
 
         #Add the common configuration to this node's configuration
-        #common_cfg_file = str(configuration.get("common_cfg_file",
-        #                                        "config/common_cfg.yaml"))
-        #common_cfg_yaml_file = open(common_cfg_file)
-        #common_cfg_dict = yaml.load(common_cfg_yaml_file,
-        #                            Loader=yaml.FullLoader)
-        #common_cfg_yaml_file.close()
-        #configuration.update(common_cfg_dict)
+        common_cfg_file = str(configuration.get("common_cfg_file",
+                                                "config/common_cfg.yaml"))
+        common_cfg_yaml_file = open(common_cfg_file)
+        common_cfg_dict = yaml.load(common_cfg_yaml_file,
+                                    Loader=yaml.FullLoader)
+        common_cfg_yaml_file.close()
+        configuration.update(common_cfg_dict)
 
+        #Get configuration values:
         self.robot_num = int(configuration.get("swarm_size", 2))
         self.robot_namespaces = list(configuration.get("robot_namespaces",
                                                        ["robot1", "robot2"]))
-        self.ns_bytes_lenght = int(configuration.get("ns_bytes_lenght", 64))
+        self.ns_bytes_length = int(configuration.get("ns_bytes_length", 64))
 
         self.goal_checker_min_dist = float(
             configuration.get("goal_checker_min_dist", 0.3)
@@ -69,59 +85,48 @@ class Navigator(Operator):
         self.goal_resend_timeout = float(
             configuration.get("goal_resend_timeout", 1.0)
             )
-        
-        self.pending = list()
 
+        #Other attributes needed:
+        self.pending = list()
         self.first_time = True
         self.object_found = False
         self.buffer_core = tf2_ros.BufferCore(Duration(sec=1, nanosec=0))
         self.current_wps = [[PoseStamped(), time.time(), -1.0]] * self.robot_num
 
-        check_for_type_support(PoseStamped)
-    
-    async def wait_tf1(self):
-        data_msg = await self.input_tf1.recv()
-        return ("TF1", data_msg)
-    
-    async def wait_tf2(self):
-        data_msg = await self.input_tf2.recv()
-        return ("TF2", data_msg)
-    
-    async def wait_next_wp(self):
-        data_msg = await self.input_next_wp.recv()
-        return ("NextWP", data_msg)
-
-    async def wait_world_pos(self):
-        data_msg = await self.input_world_pos.recv()
-        return ("WorldObjPose", data_msg)
-
     def create_task_list(self):
         task_list = [] + self.pending
-        if not any(t.get_name() == "TF1" for t in task_list):
+
+        #For every listed input append an async task to the task_list:
+        for i, in_tf in enumerate(INPUTS_TFS):
+            if not any(t.get_name() == in_tf for t in task_list):
+                task_list.append(
+                    asyncio.create_task(
+                        get_input_func(in_tf, self.inputs_tfs[i])(), name=in_tf
+                    )
+                )
+        #Append single inputs async task to the task_list one by one:
+        if not any(t.get_name() == INPUT_NEXT_WP for t in task_list):
             task_list.append(
-                asyncio.create_task(self.wait_tf1(), name="TF1")
+                asyncio.create_task(get_input_func(INPUT_NEXT_WP,
+                                                   self.input_next_wp)(),
+                                    name=INPUT_NEXT_WP)
             )
-        if not any(t.get_name() == "TF2" for t in task_list):
+        if not any(t.get_name() == INPUT_WORLD_OBJ_POSE for t in task_list):
             task_list.append(
-                asyncio.create_task(self.wait_tf2(), name="TF2")
+                asyncio.create_task(get_input_func(INPUT_WORLD_OBJ_POSE,
+                                                   self.input_world_pos)(),
+                                    name=INPUT_WORLD_OBJ_POSE)
             )
-        if not any(t.get_name() == "NextWP" for t in task_list):
-            task_list.append(
-                asyncio.create_task(self.wait_next_wp(), name="NextWP")
-            )
-        if not any(t.get_name() == "WorldObjPose" for t in task_list):
-            task_list.append(
-                asyncio.create_task(self.wait_world_pos(), name="WorldObjPose")
-            )
+        
         return task_list
 
     async def iteration(self) -> None:
-        #Make the first request for each robot:
+        #Make the first request for each robot only once:
         if self.first_time:
             for ns in self.robot_namespaces:
                 print(f"NAVIGATOR_OP -> {ns} sending first waypoint request...")
-                ns_ser = ser_string(ns, self.ns_bytes_lenght, ' ')
-                await self.output_wp_req.send(ns_ser) #TODO: try to send it in init function
+                ns_ser = ser_string(ns, self.ns_bytes_length, ' ')
+                await self.output_wp_req.send(ns_ser)
             self.first_time = False
 
         (done, pending) = await asyncio.wait(
@@ -132,17 +137,19 @@ class Navigator(Operator):
         for d in done:
             (who, data_msg) = d.result()
 
-            if who == "NextWP" and not self.object_found:
-                ns = deser_string(data_msg.data[:self.ns_bytes_lenght], ' ')
+            #Get the next waypoint:
+            if who == INPUT_NEXT_WP and not self.object_found:
+                ns = deser_string(data_msg.data[:self.ns_bytes_length], ' ')
                 index = self.robot_namespaces.index(ns)
                 
-                ser_current_wp = data_msg.data[self.ns_bytes_lenght:]
+                ser_current_wp = data_msg.data[self.ns_bytes_length:]
                 self.current_wps[index] = [deser_ros2_msg(ser_current_wp, PoseStamped),
                                            time.time(), -1.0]
                 print(f"NAVIGATOR_OP -> {self.robot_namespaces[index]} received next waypoint, sending it: {get_xy_from_pose(self.current_wps[index][0])}")
-                await self.wp_outputs[index].send(ser_current_wp)
+                await self.outputs_wps[index].send(ser_current_wp)
 
-            if "TF" in who and not self.object_found: #who contains "TF" or "TF_static".
+            #Get the robots poses:
+            if who in INPUTS_TFS and not self.object_found: #who contains "TF" or "TF_static".
                 index = int(who[-1]) -1 #who should be TF1, TF2, ...
                 ns = self.robot_namespaces[index]
                 self.tf_msg = deser_ros2_msg(data_msg.data, TFMessage)
@@ -175,22 +182,23 @@ class Navigator(Operator):
                             if dist < self.goal_checker_min_dist:
                                 print("NAVIGATOR_OP -> Waypoint reached, sending next request...")
                                 ns = self.robot_namespaces[index]
-                                ns_ser = ser_string(ns, self.ns_bytes_lenght, ' ')
+                                ns_ser = ser_string(ns, self.ns_bytes_length, ' ')
                                 await self.output_wp_req.send(ns_ser)
                             
                         except Exception as e:
                             pass
                             #print(e)
 
-            if who == "WorldObjPose":
+            #Get the object's 3D pose:
+            if who == INPUT_WORLD_OBJ_POSE:
                 self.object_found = True
-                ser_ns = data_msg.data[:self.ns_bytes_lenght]
+                ser_ns = data_msg.data[:self.ns_bytes_length]
                 ns = deser_string(ser_ns)
                 index = self.robot_namespaces.index(ns)
                 
-                ser_obj_pos = data_msg.data[self.ns_bytes_lenght:] #We don't need to deserialize it
+                ser_obj_pos = data_msg.data[self.ns_bytes_length:] #We don't need to deserialize it
                 #Send all the robots to the object's pose and stop following paths:
-                for i, output in enumerate(self.wp_outputs):
+                for i, output in enumerate(self.outputs_wps):
                     print(f"NAVIGATOR_OP -> Sending {self.robot_namespaces[i]} to objects's position")
                     output.send(ser_obj_pos)
     

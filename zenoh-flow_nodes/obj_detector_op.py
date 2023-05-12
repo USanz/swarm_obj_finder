@@ -3,7 +3,7 @@ from zenoh_flow import Input, Output
 from zenoh_flow.types import Context
 from typing import Dict, Any
 
-import asyncio, numpy as np, cv2
+import asyncio, numpy as np, cv2, yaml
 
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
@@ -12,6 +12,13 @@ import sys, os, inspect
 currentdir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
 sys.path.insert(0, currentdir)
 from comms_utils import *
+
+
+
+INPUTS_IMAGES = ["Image1", "Image2"]
+
+OUTPUT_OBJ_DETECTED = "ObjDetected"
+OUTPUTS_DEBUG_IMGS  = ["DebugImgFiltered1", "DebugImgFiltered2"]
 
 
 
@@ -24,37 +31,42 @@ class PathsPlanner(Operator):
         outputs: Dict[str, Output],
     ):
         configuration = {} if configuration is None else configuration
-
-        self.input_img1 = inputs.get("Image1", None)
-        self.input_img2 = inputs.get("Image2", None)
         
-        self.output_obj_detected = outputs.get("ObjDetected", None)
-        output_debug_img1 = outputs.get("DebugImgFiltered1", None)
-        output_debug_img2 = outputs.get("DebugImgFiltered2", None)
-        self.output_debug_imgs = [output_debug_img1, output_debug_img2]
+        self.inputs_imgs = list()
+        self.outputs_debug_imgs = list()
+        for in_img, out_debug_img in zip(INPUTS_IMAGES, OUTPUTS_DEBUG_IMGS):
+            #Listed inputs:
+            self.inputs_imgs.append(inputs.get(in_img, None))
+            #Listed outputs:
+            self.outputs_debug_imgs.append(outputs.get(out_debug_img, None))
+        #Single outputs:
+        self.output_obj_detected = outputs.get(OUTPUT_OBJ_DETECTED, None)
+
+        #With the new update the common config file is not needed anymore since
+        #the it can be put directly in the data-flow yaml file:
 
         #Add the common configuration to this node's configuration
-        #common_cfg_file = str(configuration.get("common_cfg_file",
-        #                                        "config/common_cfg.yaml"))
-        #common_cfg_yaml_file = open(common_cfg_file)
-        #common_cfg_dict = yaml.load(common_cfg_yaml_file,
-        #                            Loader=yaml.FullLoader)
-        #common_cfg_yaml_file.close()
-        #configuration.update(common_cfg_dict)
+        common_cfg_file = str(configuration.get("common_cfg_file",
+                                                "config/common_cfg.yaml"))
+        common_cfg_yaml_file = open(common_cfg_file)
+        common_cfg_dict = yaml.load(common_cfg_yaml_file,
+                                    Loader=yaml.FullLoader)
+        common_cfg_yaml_file.close()
+        configuration.update(common_cfg_dict)
 
+        #Get configuration values:
         self.robot_namespaces = list(configuration.get("robot_namespaces",
                                                        ["robot1", "robot2"]))
-        self.ns_bytes_lenght = int(configuration.get("ns_bytes_lenght", 64))     
-        self.int_bytes_lenght = int(configuration.get("int_bytes_lenght", 4))
+        self.ns_bytes_length = int(configuration.get("ns_bytes_length", 64))     
+        self.int_bytes_length = int(configuration.get("int_bytes_length", 4))
 
         self.lower_threshold = np.array(list(configuration.get("lower_color_filter_threshold",
                                                        [0, 195, 75])))
         self.upper_threshold = np.array(list(configuration.get("upper_color_filter_threshold",
                                                        [16, 225, 105])))
         
+        #Other attributes needed:
         self.bridge = CvBridge()
-        self.obj_found = False
-
         self.pending = list()
 
     def detect_object(self, img: np.ndarray, x_pix_step: int, y_pix_step: int,
@@ -67,8 +79,10 @@ class PathsPlanner(Operator):
         
         centroid = [0, 0]
         num = 0
+        #Iterate only through a few spaced pixels to reduce comuting:
         for i in range(0, width, x_pix_step):
             for j in range(0, height, y_pix_step):
+                #Color filter:
                 if ((lower_threshold < hsv_img[j, i]).all() and
                     (hsv_img[j, i] < upper_threshold).all()):
                     centroid[0] += i
@@ -82,26 +96,19 @@ class PathsPlanner(Operator):
         else:
             centroid = None
 
-        return (centroid, ser_ros2_msg(self.bridge.cv2_to_imgmsg(img)))
+        img_msg = self.bridge.cv2_to_imgmsg(img, encoding='rgb8')
+        return (centroid, ser_ros2_msg(img_msg))
 
-    async def wait_img1(self):
-        data_msg = await self.input_img1.recv()
-        return ("Image1", data_msg)
-    
-    async def wait_img2(self):
-        data_msg = await self.input_img2.recv()
-        return ("Image2", data_msg)
-    
     def create_task_list(self):
         task_list = [] + self.pending
-        if not any(t.get_name() == "Image1" for t in task_list):
-            task_list.append(
-                asyncio.create_task(self.wait_img1(), name="Image1")
-            )
-        if not any(t.get_name() == "Image2" for t in task_list):
-            task_list.append(
-                asyncio.create_task(self.wait_img2(), name="Image2")
-            )
+        #For every listed input append an async task to the task_list:
+        for i, in_tf in enumerate(INPUTS_IMAGES):
+            if not any(t.get_name() == in_tf for t in task_list):
+                task_list.append(
+                    asyncio.create_task(
+                        get_input_func(in_tf, self.inputs_imgs[i])(), name=in_tf
+                    )
+                )
         return task_list
 
     async def iteration(self) -> None:
@@ -114,24 +121,25 @@ class PathsPlanner(Operator):
         for d in done:
             (who, data_msg) = d.result()
 
-            if "Image" in who: #who contains "Image".
+            if who in INPUTS_IMAGES: #who contains "Image".
                 index = int(who[-1]) -1 #who should be Image1, Image2, ...
+                #Get the cv2 image from the ROS2 message:
                 img_msg = deser_ros2_msg(data_msg.data, Image)
                 img = self.bridge.imgmsg_to_cv2(img_msg,
                                                 desired_encoding='passthrough')
-
+                #Apply filter to search the object:
                 centroid, ser_debug_img = self.detect_object(img, 100, 100,
                                                          self.lower_threshold,
                                                          self.upper_threshold)
-                await self.output_debug_imgs[index].send(ser_debug_img)
+                await self.outputs_debug_imgs[index].send(ser_debug_img)
 
-                if centroid != None:# and not self.obj_found:
+                #If the object is detecter centroid won't be None:
+                if centroid != None:
                     ser_msg = ser_string(self.robot_namespaces[index],
-                                         self.ns_bytes_lenght)
+                                         self.ns_bytes_length)
                     ser_msg += ser_int_list(centroid,
-                                            self.int_bytes_lenght)
+                                            self.int_bytes_length)
                     await self.output_obj_detected.send(ser_msg)
-                    self.obj_found = True
         
         return None
 
