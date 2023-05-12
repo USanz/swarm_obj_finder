@@ -149,7 +149,7 @@ class Navigator(Operator):
                 await self.outputs_wps[index].send(ser_current_wp)
 
             #Get the robots poses:
-            if who in INPUTS_TFS and not self.object_found: #who contains "TF" or "TF_static".
+            if who in INPUTS_TFS: #who contains "TF" or "TF_static".
                 index = int(who[-1]) -1 #who should be TF1, TF2, ...
                 ns = self.robot_namespaces[index]
                 self.tf_msg = deser_ros2_msg(data_msg.data, TFMessage)
@@ -173,13 +173,14 @@ class Navigator(Operator):
                             robot_pose.pose.position.y = new_tf.transform.translation.y
                             robot_pose.pose.orientation = new_tf.transform.rotation
                             ser_pose = ser_ros2_msg(robot_pose)
-                            await self.output_robot_poses[index].send(ser_pose)
+                            await self.outputs_robot_poses[index].send(ser_pose)
 
                             x_dist = new_tf.transform.translation.x - self.current_wps[index][0].pose.position.x
                             y_dist = new_tf.transform.translation.y - self.current_wps[index][0].pose.position.y
                             dist = sqrt(x_dist**2 + y_dist**2)
                             self.current_wps[index][2] = dist
-                            if dist < self.goal_checker_min_dist:
+                            if (dist < self.goal_checker_min_dist
+                                and not self.object_found):
                                 print("NAVIGATOR_OP -> Waypoint reached, sending next request...")
                                 ns = self.robot_namespaces[index]
                                 ns_ser = ser_string(ns, self.ns_bytes_length, ' ')

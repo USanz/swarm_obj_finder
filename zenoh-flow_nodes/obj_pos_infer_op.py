@@ -77,9 +77,11 @@ class PathsPlanner(Operator):
         self.ns_bytes_length = int(configuration.get("ns_bytes_length", 64))
         self.int_bytes_length = int(configuration.get("int_bytes_length", 4))
         self.lidar_threshold = int(configuration.get("lidar_threshold", 4))
+        self.safe_distance = float(configuration.get("safe_distance", 0.3))
 
         #Other attributes needed:
         self.first_time = True
+        self.first_obj_found = True
         self.pending = list()
         self.cam_infos = [CameraInfo()] * self.robot_num
         self.robot_poses = [PoseStamped()] * self.robot_num
@@ -103,12 +105,11 @@ class PathsPlanner(Operator):
         avg /= counter
         return avg
 
-    def img2world(self, pix: tuple, cam_info: CameraInfo,
-                  rob_pose: PoseStamped, lidar: list) -> tuple:
+    def img2world(self, pix: tuple, index: int) -> tuple:
         #Get the angle of view (AOV) from the cam info:
-        film_size_x = cam_info.width
+        film_size_x = self.cam_infos[index].width
         obj_x_img = pix[0]
-        f_x = cam_info.k[0] #Focal point x (from 3x3 k matrix).
+        f_x = self.cam_infos[index].k[0] #Focal point x (from 3x3 k matrix).
         #f_y = cam_info.k[4] #Focal point y (not needed).
         aov_h = 2 * arctan2(film_size_x, 2*f_x) #Horizontal angle of view.
 
@@ -117,20 +118,23 @@ class PathsPlanner(Operator):
         obj_ang = round(obj_ang)
 
         #Get the dist of the object to get its polar coords from robot's pose:
-        #TODO: We can substract like 10cm or so to this distance to make the robots stay further from the obj and avoid collisions with it.
-        obj_dist = self.lidar_mean(lidar, obj_ang, self.lidar_threshold)
-        roll, pitch, yaw = quat2euler(rob_pose.pose.orientation)
+        obj_dist = self.lidar_mean(self.lidars[index], obj_ang,
+                                   self.lidar_threshold) - self.safe_distance
+        _, _, yaw = quat2euler(self.robot_poses[index].pose.orientation) #rpy
         tot_ang = yaw + deg2rad(obj_ang)
         x_world_dist_from_rob = obj_dist * cos(tot_ang)
         y_world_dist_from_rob = obj_dist * sin(tot_ang)
 
         world_pose = PoseStamped()
-        world_pose.pose.position.x = float(rob_pose.pose.position.x + x_world_dist_from_rob)
-        world_pose.pose.position.y = float(rob_pose.pose.position.y + y_world_dist_from_rob)
-        world_pose.pose.orientation = rob_pose.pose.orientation
+        world_pose.pose.position.x = self.robot_poses[index].pose.position.x\
+            + x_world_dist_from_rob
+        world_pose.pose.position.y = self.robot_poses[index].pose.position.y\
+            + y_world_dist_from_rob
+        world_pose.pose.orientation = self.robot_poses[index].pose.orientation
         
         ###DEBUG:
         marker_arr = MarkerArray()
+
         #Marker (blue) from map frame (absolute coords)
         marker_dict = {"id": 1000, "ns": "obj_pose", "frame_locked": False,
                        "frame_id": MARKER_FRAME_ID, "scale": [0.2, 0.1, 0.1], 
@@ -141,6 +145,7 @@ class PathsPlanner(Operator):
                        "color_rgba": [0.2, 0.2, 1.0, 1.0]}
         marker_arr.markers.append(get_marker(marker_dict))
 
+        #To see the marker from the robot (but it's displayed in every robot):
         #Marker (pinkie) from base_scan frame (relative to the robot coords)
         #marker_dict = {"id": 1001, "ns": "obj_pose", "frame_locked": False,
         #               "frame_id":"base_scan", "lifetime_s": 0, "lifetime_ns":0,
@@ -151,9 +156,7 @@ class PathsPlanner(Operator):
         #marker_arr.markers.append(get_marker(marker_dict))
         ###
 
-        debug_info = [marker_arr, obj_ang, obj_dist,
-                      x_world_dist_from_rob, y_world_dist_from_rob]
-        return (world_pose, debug_info)
+        return (world_pose, marker_arr)
 
     def create_task_list(self):
         task_list = [] + self.pending
@@ -217,37 +220,27 @@ class PathsPlanner(Operator):
             if who == INPUT_OBJ_DETECTED:
                 ser_ns = data_msg.data[:self.ns_bytes_length]
                 ns = deser_string(ser_ns)
-                index = self.robot_namespaces.index(ns)
-                #Get the centroid from the msg:
-                centroid = deser_int_list(
-                    data_msg.data[self.ns_bytes_length:], self.int_bytes_length
-                    )
-                #Convert it from 2D to 3D thanks to the lidar:
-                world_pose, debug_info = self.img2world(tuple(centroid),
-                                                        self.cam_infos[index],
-                                                        self.robot_poses[index],
-                                                        self.lidars[index])
-                #Send the 3D pose every second:
-                if time.time() - self.last_time > 1.0:
-                    debug_marker_msg, ang, dist, xdist, ydist,  = debug_info
 
+                if self.first_obj_found:
+                    self.firs_robot = ns
+                    self.first_obj_found = False
+                
+                if ns == self.firs_robot:
+                    index = self.robot_namespaces.index(ns)
+                    #Get the centroid from the msg:
+                    centroid = deser_int_list(
+                        data_msg.data[self.ns_bytes_length:], self.int_bytes_length
+                        )
+                    #Convert it from 2D to 3D thanks to the lidar:
+                    world_pose, debug_marker_msg = self.img2world(tuple(centroid),
+                                                                  index)
+                    #Send the 3D pose:
                     ser_world_pos = ser_ros2_msg(world_pose)
                     await self.output_world_pos.send(ser_ns + ser_world_pos)
-
-                    #TODO: maybe it's easier to request the transform from map to
-                    #base_footprint and save the transform from base_footprint to the object
-                    #for then lookup the transform from map to the marker new TF.
-
+                    
                     ser_debug_marker = ser_ros2_msg(debug_marker_msg)
                     await self.output_debug_marker.send(ser_debug_marker)
                     self.last_time = time.time()
-
-                    #DEBUG INFO
-                    world_pos = [self.robot_poses[index].pose.position.x,
-                                 self.robot_poses[index].pose.position.y]
-                    print(f"[{self.last_time}] OBJ_POS_INFER_OP -> Robot world pos: {world_pos}")
-                    print(f"[{self.last_time}] OBJ_POS_INFER_OP -> Object angle [º]: {ang}")
-                    print(f"[{self.last_time}] OBJ_POS_INFER_OP -> Object dist [m]: {dist} -> [{xdist}, {ydist}]\n")
 
         return None
 

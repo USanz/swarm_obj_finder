@@ -140,6 +140,7 @@ class PathsPlanner(Operator):
                     ser_msg += ser_int_list(centroid,
                                             self.int_bytes_length)
                     await self.output_obj_detected.send(ser_msg)
+                    print(f"OBJ_DETECTOR_OP -> object detected by: {self.robot_namespaces[index]}")
         
         return None
 
