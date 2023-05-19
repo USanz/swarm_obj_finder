@@ -44,17 +44,17 @@ class PathsPlanner(Operator):
     ):
         configuration = {} if configuration is None else configuration
 
-        #Single inputs:
+        # Single inputs:
         self.input_wp_req = inputs.get(INPUT_WP_REQUEST, None)
-        #Single outputs:
+        # Single outputs:
         self.output_debug_img = outputs.get(OUTPUT_DEBUG_MAP_DIV, None)
         self.output_markers = outputs.get(OUTPUT_DEBUG_MARKER, None)
         self.output_next_wp = outputs.get(OUTPUT_NEXT_WP, None)
 
-        #With the new update the common config file is not needed anymore since
-        #the it can be put directly in the data-flow yaml file:
+        # TODO: With the new update the common config file is not needed anymore
+        # since the it can be put directly in the data-flow yaml file:
 
-        #Add the common configuration to this node's configuration
+        # Add the common configuration to this node's configuration
         common_cfg_file = str(configuration.get("common_cfg_file",
                                                 "config/common_cfg.yaml"))
         common_cfg_yaml_file = open(common_cfg_file)
@@ -63,7 +63,7 @@ class PathsPlanner(Operator):
         common_cfg_yaml_file.close()
         configuration.update(common_cfg_dict)
 
-        #Get configuration values:
+        # Get configuration values:
         self.robot_num = int(configuration.get("swarm_size", 2))
         self.robot_namespaces = list(configuration.get("robot_namespaces",
                                                        ["robot1", "robot2"]))
@@ -74,24 +74,24 @@ class PathsPlanner(Operator):
                                 "maps/turtlebot3_world/turtlebot3_world.yaml")
                             )
 
-        #Other attributes needed:
+        # Other attributes needed:
         self.debug_img_sent = False
         self.ids = 0
         self.times = 0
         self.colors = [[1.0, 0.5, 1.0, 1.0],
                        [0.0, 1.0, 0.5, 1.0]]
 
-        #Load map (yaml fields and img from yaml file):
+        # Load map (yaml fields and img from yaml file):
         self.load_map(map_yaml_path)
 
-        #Get the bounding box and divide the map (get the bounding corners):
+        # Get the bounding box and divide the map (get the bounding corners):
         divs, self.debug_div_img_msg_ser = divide_map(self.img_interpr,
                                                       self.map_img,
                                                       self.robot_num,
                                                       (self.map_free_thresh,
                                                        self.map_occupied_thresh),
                                                       True)
-        #For each division get the path and store it:
+        # For each division get the path and store it:
         marker_array_msg = MarkerArray()
         marker_array_msg.markers = []
         self.paths = []
@@ -102,8 +102,8 @@ class PathsPlanner(Operator):
                                        self.map_occupied_thresh),
                                       self.wp_world_separation, self.map_origin,
                                       self.map_resolution, invert)
-            #Invert every odd path to separete the robots (different starting
-            #points):
+            # Invert every odd path to separete the
+            # robots (different starting points):
             invert = not invert
             self.paths.append(path)
             marker_array_msg.markers += self.get_markers_from_path(path, ns)
@@ -114,18 +114,18 @@ class PathsPlanner(Operator):
         self.map_data_dict = yaml.load(map_yaml_file, Loader=yaml.FullLoader)
         map_yaml_file.close()
 
-        #Check the needed fields:
+        # Check the needed fields:
         keys_needed = [MAP_KEY_IMAGE, MAP_KEY_RESOLUTION, MAP_KEY_ORIGIN,
                        MAP_KEY_OCCU_THRESH, MAP_KEY_FREE_THRESH]
         if (not all(map(lambda x: x in self.map_data_dict.keys(), keys_needed))\
-            or len(self.map_data_dict.get(MAP_KEY_ORIGIN)) != 3): #[x, y, yaw]
+            or len(self.map_data_dict.get(MAP_KEY_ORIGIN)) != 3): # [x, y, yaw]
             print(f"ERROR: required field/s ({keys_needed}) missing in map yaml file")
             raise Exception("ERROR: required field/s missing")
         
         self.map_img = cv2.imread(self.map_data_dict.get(MAP_KEY_IMAGE),
                                   cv2.IMREAD_GRAYSCALE)
-        #Map img values interpretation (Following the specifications in:
-        #http://wiki.ros.org/map_server:
+        # Map img values interpretation (Following the specifications in:
+        # http://wiki.ros.org/map_server:
         map_negate = bool(self.map_data_dict.get(MAP_KEY_NEGATE))
         self.img_interpr = self.map_img / 255.0 if map_negate else (255 - self.map_img) / 255.0
 
@@ -150,7 +150,7 @@ class PathsPlanner(Operator):
             
             markers.append(get_marker(marker_dict))
         self.times += 1
-        #The first one will always be red:
+        # The first one will always be red:
         markers[0].color.r = 1.0
         markers[0].color.g = 0.0
         markers[0].color.b = 0.0
@@ -163,10 +163,10 @@ class PathsPlanner(Operator):
             await self.output_markers.send(self.marker_array_msg_ser)
             self.debug_img_sent = True
 
-        #Process waypoint requests:
+        # Process waypoint requests:
         data_msg = await self.input_wp_req.recv()
 
-        ns = deser_string(data_msg.data, ' ') #who (namespace)
+        ns = deser_string(data_msg.data, ' ') # Who (namespace)
         index = self.robot_namespaces.index(ns)
         next_wp = self.paths[index].pop(0)
         next_wp_ser = ser_ros2_msg(next_wp)

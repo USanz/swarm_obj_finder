@@ -5,7 +5,7 @@ from rclpy.type_support import check_for_type_support
 
 def ser_string(s: str, s_lenght: int, fill_char=' ') -> bytes:
     ns_bytes = bytes(s, "utf-8")
-    #Fixed ns lenght of s_lenght (fill with space characters):
+    # Fixed ns lenght of s_lenght (fill with space characters):
     return bytes(fill_char, "utf-8") * (s_lenght - len(ns_bytes)) + ns_bytes
 
 def deser_string(bytes: bytes, fill_chars=' ') -> str:
@@ -37,7 +37,7 @@ def deser_int_list(bytes_list: list, int_bytes_lenght):
         l.append(deser_int(bytes_list[i:i+int_bytes_lenght]))
     return l
 
-#To get the asynchronous functions for the inputs
+# To get the asynchronous functions for the inputs:
 def get_input_func( name, input):
     async def func():
         return (name, await input.recv())

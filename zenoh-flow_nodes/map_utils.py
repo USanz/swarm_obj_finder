@@ -27,9 +27,9 @@ def factorize(n: int) -> list:
 
 def get_squarest_distribution(factors: list) -> list:
     distribution = [1, 1]
-    for f in reversed(factors): #Starts from the highest to the lowest.
+    for f in reversed(factors): # Starts from the highest to the lowest.
         if distribution[0] < distribution[1]:
-            distribution[0] *= f #The factor is multiplied by the lowest member of the distribution
+            distribution[0] *= f # The factor is multiplied by the lowest member of the distribution.
         else:
             distribution[1] *= f
     return distribution
@@ -37,14 +37,14 @@ def get_squarest_distribution(factors: list) -> list:
 def get_division_shape(div_num) -> list:
     factors = factorize(div_num)
 
-    if len(factors) == 0: #For only one robot
+    if len(factors) == 0: # For only one robot
         return [1, 1]
     elif len(factors) == 1:
         factors.append(1)
         return factors
     elif len(factors) == 2:
         return factors
-    else: #More than one single configuration
+    else: # More than one single configuration
         return get_squarest_distribution(factors)
 
 def get_map_upper_bound(itpr_map_img: np.ndarray, thresholds: tuple) -> int:
@@ -105,7 +105,7 @@ def divide_map(itpr_map_img: np.ndarray, map_img: np.ndarray,
 
     x_shift = reduced_width / division_shape[0]
     y_shift = reduced_height / division_shape[1]
-    bboxes = [] #Map divided into N bboxes:
+    bboxes = [] # Map divided into N bboxes:
     for i in range(division_shape[0]):
         for j in range(division_shape[1]):
             bboxes.append([(round(left_top_point[0] + x_shift * i),
@@ -113,9 +113,9 @@ def divide_map(itpr_map_img: np.ndarray, map_img: np.ndarray,
                             (round(left_top_point[0] + x_shift * (i+1)),
                             round(left_top_point[1] + y_shift * (j+1)))])
 
-    ### TO DEBUG:
+    ### DEBUG:
     if debug:
-        debug_div_img = np.array(map_img) #Copy the img.
+        debug_div_img = np.array(map_img) # Copy the img.
         for i in range(division_shape[0] + 1):
             cv2.line(debug_div_img,
                         [round(left_top_point[0] + (x_shift*i)),
@@ -155,7 +155,6 @@ def map2world(map_pose: PoseStamped, origin: list, resolution: int) -> PoseStamp
 
 def img2map(img_pix: tuple, img_shape: tuple) -> tuple:
     img_x, img_y = img_pix
-    #img_height, img_width = self.map_img.shape
     img_height, img_width = img_shape
     map_pos = (float(img_x - (img_width/2)),
                 float(-(img_y - (img_height/2))))
@@ -181,7 +180,7 @@ def get_path_from_area(area: list, itpr_map_img: np.ndarray, thresholds: tuple,
     if inverted:
         vertical_range.reverse()
     ori_index = 0
-    #new_img = self.map_img #DEBUG
+    #new_img = self.map_img ### DEBUG
 
     path = list()
     for x in range(int(p1[0]), int(p2[0]), round(wp_world_separation)):
@@ -196,13 +195,13 @@ def get_path_from_area(area: list, itpr_map_img: np.ndarray, thresholds: tuple,
                 orientations[ori_index % len(orientations)]
                 )
             
-            #cv2.circle(new_img, (x, y), 2, 0, -1) #DEBUG
+            #cv2.circle(new_img, (x, y), 2, 0, -1) ### DEBUG
             if (itpr_map_img[y, x] < thresholds[0] and
                 not is_near_wall((x, y), itpr_map_img, 3, thresholds[1])):
                 path.append(map2world(wp, origin, resolution))
         vertical_range.reverse()
         ori_index += 1
-    #cv2.imwrite("/tmp/test_points_map_img.png", new_img) #DEBUG
+    #cv2.imwrite("/tmp/test_points_map_img.png", new_img) ### DEBUG
     if inverted:
         path.reverse()
     return path

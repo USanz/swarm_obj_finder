@@ -35,17 +35,17 @@ class PathsPlanner(Operator):
         self.inputs_imgs = list()
         self.outputs_debug_imgs = list()
         for in_img, out_debug_img in zip(INPUTS_IMAGES, OUTPUTS_DEBUG_IMGS):
-            #Listed inputs:
+            # Listed inputs:
             self.inputs_imgs.append(inputs.get(in_img, None))
-            #Listed outputs:
+            # Listed outputs:
             self.outputs_debug_imgs.append(outputs.get(out_debug_img, None))
-        #Single outputs:
+        # Single outputs:
         self.output_obj_detected = outputs.get(OUTPUT_OBJ_DETECTED, None)
 
-        #With the new update the common config file is not needed anymore since
-        #the it can be put directly in the data-flow yaml file:
+        # TODO: With the new update the common config file is not needed anymore
+        # since the it can be put directly in the data-flow yaml file:
 
-        #Add the common configuration to this node's configuration
+        # Add the common configuration to this node's configuration
         common_cfg_file = str(configuration.get("common_cfg_file",
                                                 "config/common_cfg.yaml"))
         common_cfg_yaml_file = open(common_cfg_file)
@@ -54,7 +54,7 @@ class PathsPlanner(Operator):
         common_cfg_yaml_file.close()
         configuration.update(common_cfg_dict)
 
-        #Get configuration values:
+        # Get configuration values:
         self.robot_namespaces = list(configuration.get("robot_namespaces",
                                                        ["robot1", "robot2"]))
         self.ns_bytes_length = int(configuration.get("ns_bytes_length", 64))     
@@ -65,7 +65,7 @@ class PathsPlanner(Operator):
         self.upper_threshold = np.array(list(configuration.get("upper_color_filter_threshold",
                                                        [16, 225, 105])))
         
-        #Other attributes needed:
+        # Other attributes needed:
         self.bridge = CvBridge()
         self.pending = list()
 
@@ -79,10 +79,10 @@ class PathsPlanner(Operator):
         
         centroid = [0, 0]
         num = 0
-        #Iterate only through a few spaced pixels to reduce comuting:
+        # Iterate only through a few spaced pixels to reduce comuting:
         for i in range(0, width, x_pix_step):
             for j in range(0, height, y_pix_step):
-                #Color filter:
+                # Color filter:
                 if ((lower_threshold < hsv_img[j, i]).all() and
                     (hsv_img[j, i] < upper_threshold).all()):
                     centroid[0] += i
@@ -101,7 +101,7 @@ class PathsPlanner(Operator):
 
     def create_task_list(self):
         task_list = [] + self.pending
-        #For every listed input append an async task to the task_list:
+        # For every listed input append an async task to the task_list:
         for i, in_tf in enumerate(INPUTS_IMAGES):
             if not any(t.get_name() == in_tf for t in task_list):
                 task_list.append(
@@ -121,19 +121,19 @@ class PathsPlanner(Operator):
         for d in done:
             (who, data_msg) = d.result()
 
-            if who in INPUTS_IMAGES: #who contains "Image".
-                index = int(who[-1]) -1 #who should be Image1, Image2, ...
-                #Get the cv2 image from the ROS2 message:
+            if who in INPUTS_IMAGES:
+                index = int(who[-1]) -1 # Who should be Image1, Image2, ...
+                # Get the cv2 image from the ROS2 message:
                 img_msg = deser_ros2_msg(data_msg.data, Image)
                 img = self.bridge.imgmsg_to_cv2(img_msg,
                                                 desired_encoding='passthrough')
-                #Apply filter to search the object:
+                # Apply filter to search the object:
                 centroid, ser_debug_img = self.detect_object(img, 100, 100,
                                                          self.lower_threshold,
                                                          self.upper_threshold)
                 await self.outputs_debug_imgs[index].send(ser_debug_img)
 
-                #If the object is detecter centroid won't be None:
+                # If the object is detecter centroid won't be None:
                 if centroid != None:
                     ser_msg = ser_string(self.robot_namespaces[index],
                                          self.ns_bytes_length)

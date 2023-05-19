@@ -3,8 +3,9 @@ flow: swarm_obj_finder
 vars:
   BASE_DIR_PATH: file:///home/usanz/zs_t3/t3_ws/src/swarm_obj_finder
 
-#TODO: it doesnt work:
-#Common configuration:
+# TODO: With the new update the common config file is not needed anymore
+# since the it can be put directly in the data-flow yaml file:
+
 #configuration:
 #  swarm_size: 2 #Number of robots
 #  robot_namespaces: ["robot1", "robot2"]
@@ -16,8 +17,8 @@ vars:
 sources:
   - id : tfs_source
     configuration:
-      #TODO: if update put in the all nodes:
-      #keyexpression:
+      # TODO: if zenoh-flow updated, change in every node:
+      #key_expression: foo
 
       TF1: rt/robot1/tf
       TF2: rt/robot2/tf

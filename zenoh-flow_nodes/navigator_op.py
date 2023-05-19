@@ -43,10 +43,10 @@ class Navigator(Operator):
     ):
         configuration = {} if configuration is None else configuration
 
-        #Single inputs:
+        # Single inputs:
         self.input_next_wp = inputs.get(INPUT_NEXT_WP, None)
         self.input_world_pos = inputs.get(INPUT_WORLD_OBJ_POSE, None)
-        #Single outputs:
+        # Single outputs:
         self.output_wp_req = outputs.get(OUTPUT_WP_REQ, None)
         
         self.inputs_tfs = list()
@@ -55,16 +55,16 @@ class Navigator(Operator):
         for in_tf, out_rob_pose, out_wp in zip(INPUTS_TFS,
                                                OUTPUTS_ROBOT_POSES,
                                                OUTPUTS_WPS):
-            #Listed inputs:
+            # Listed inputs:
             self.inputs_tfs.append(inputs.get(in_tf, None))
-            #Listed outputs:
+            # Listed outputs:
             self.outputs_robot_poses.append(outputs.get(out_rob_pose, None))
             self.outputs_wps.append(outputs.get(out_wp, None))
 
-        #With the new update the common config file is not needed anymore since
-        #the it can be put directly in the data-flow yaml file:
+        # TODO: With the new update the common config file is not needed anymore
+        # since the it can be put directly in the data-flow yaml file:
 
-        #Add the common configuration to this node's configuration
+        # Add the common configuration to this node's configuration
         common_cfg_file = str(configuration.get("common_cfg_file",
                                                 "config/common_cfg.yaml"))
         common_cfg_yaml_file = open(common_cfg_file)
@@ -73,7 +73,7 @@ class Navigator(Operator):
         common_cfg_yaml_file.close()
         configuration.update(common_cfg_dict)
 
-        #Get configuration values:
+        # Get configuration values:
         self.robot_num = int(configuration.get("swarm_size", 2))
         self.robot_namespaces = list(configuration.get("robot_namespaces",
                                                        ["robot1", "robot2"]))
@@ -86,7 +86,7 @@ class Navigator(Operator):
             configuration.get("goal_resend_timeout", 1.0)
             )
 
-        #Other attributes needed:
+        # Other attributes needed:
         self.pending = list()
         self.first_time = True
         self.object_found = False
@@ -96,7 +96,7 @@ class Navigator(Operator):
     def create_task_list(self):
         task_list = [] + self.pending
 
-        #For every listed input append an async task to the task_list:
+        # For every listed input append an async task to the task_list:
         for i, in_tf in enumerate(INPUTS_TFS):
             if not any(t.get_name() == in_tf for t in task_list):
                 task_list.append(
@@ -104,7 +104,7 @@ class Navigator(Operator):
                         get_input_func(in_tf, self.inputs_tfs[i])(), name=in_tf
                     )
                 )
-        #Append single inputs async task to the task_list one by one:
+        # Append single inputs async task to the task_list one by one:
         if not any(t.get_name() == INPUT_NEXT_WP for t in task_list):
             task_list.append(
                 asyncio.create_task(get_input_func(INPUT_NEXT_WP,
@@ -121,7 +121,7 @@ class Navigator(Operator):
         return task_list
 
     async def iteration(self) -> None:
-        #Make the first request for each robot only once:
+        # Make the first request for each robot only once:
         if self.first_time:
             for ns in self.robot_namespaces:
                 print(f"NAVIGATOR_OP -> {ns} sending first waypoint request...")
@@ -137,7 +137,7 @@ class Navigator(Operator):
         for d in done:
             (who, data_msg) = d.result()
 
-            #Get the next waypoint:
+            # Get the next waypoint:
             if who == INPUT_NEXT_WP and not self.object_found:
                 ns = deser_string(data_msg.data[:self.ns_bytes_length], ' ')
                 index = self.robot_namespaces.index(ns)
@@ -148,9 +148,9 @@ class Navigator(Operator):
                 print(f"NAVIGATOR_OP -> {self.robot_namespaces[index]} received next waypoint, sending it: {get_xy_from_pose(self.current_wps[index][0])}")
                 await self.outputs_wps[index].send(ser_current_wp)
 
-            #Get the robots poses:
-            if who in INPUTS_TFS: #who contains "TF" or "TF_static".
-                index = int(who[-1]) -1 #who should be TF1, TF2, ...
+            # Get the robots poses:
+            if who in INPUTS_TFS:
+                index = int(who[-1]) -1 # Who should be TF1, TF2, ...
                 ns = self.robot_namespaces[index]
                 self.tf_msg = deser_ros2_msg(data_msg.data, TFMessage)
                 for tf in self.tf_msg.transforms:
@@ -167,7 +167,7 @@ class Navigator(Operator):
                                 )
                             new_tf.child_frame_id = 'world_robot_pos'
 
-                            #Send robot's TFs to obj_pos_infer operator:
+                            # Send robot's TFs to obj_pos_infer operator:
                             robot_pose = PoseStamped()
                             robot_pose.pose.position.x = new_tf.transform.translation.x
                             robot_pose.pose.position.y = new_tf.transform.translation.y
@@ -188,9 +188,9 @@ class Navigator(Operator):
                             
                         except Exception as e:
                             pass
-                            #print(e)
+                            #print(e) ### DEBUG
 
-            #Get the object's 3D pose:
+            # Get the object's 3D pose:
             if who == INPUT_WORLD_OBJ_POSE:
                 self.object_found = True
                 ser_ns = data_msg.data[:self.ns_bytes_length]
@@ -198,7 +198,7 @@ class Navigator(Operator):
                 index = self.robot_namespaces.index(ns)
                 
                 ser_obj_pos = data_msg.data[self.ns_bytes_length:] #We don't need to deserialize it
-                #Send all the robots to the object's pose and stop following paths:
+                # Send all the robots to the object's pose and stop following paths:
                 for i, output in enumerate(self.outputs_wps):
                     print(f"NAVIGATOR_OP -> Sending {self.robot_namespaces[i]} to objects's position")
                     output.send(ser_obj_pos)
